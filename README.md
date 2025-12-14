@@ -10,6 +10,9 @@ A command-line tool that sets your desktop wallpaper, lock screen, and login scr
 ### bgStatusService.exe
 A Windows service that displays system information (neofetch-style) on your login screen, so you can identify machines without logging in.
 
+### bgStatusServiceSetup.exe
+A GUI installer that downloads and installs the latest bgStatusService from GitHub. No scripts required — just double-click to install or uninstall.
+
 ---
 
 ## bgchanger
@@ -62,6 +65,7 @@ A Windows service that overlays system information on your login screen backgrou
 
 ### Information Displayed
 
+**Right Panel (System Info):**
 - Computer name / Hostname
 - Windows version
 - CPU model and core count
@@ -70,27 +74,50 @@ A Windows service that overlays system information on your login screen backgrou
 - IP address(es)
 - Disk space (used / total)
 - Serial number
+- System uptime
+- Timestamp when the graphic was generated
+
+**Left Panel (Services Status):**
+- Running services count
+- Critical services status (DHCP, DNS, Windows Update, Defender, etc.)
+- Failed services list (auto-start services that aren't running)
+- Windows Server support (shows additional server-specific services like AD, IIS, DNS Server, DHCP Server, SQL Server, Hyper-V)
 
 ### Features
 
 - **Runs at boot** — Updates the login screen before any user logs in
 - **Smart text color** — Automatically chooses white or black text based on background brightness
+- **Resolution-aware scaling** — Detects your display resolution and scales text appropriately (readable from 1024x768 to 4K+)
+- **Dual panel layout** — Services status on the left, system info on the right
+- **Windows Server support** — Automatically detects Server editions and monitors server-specific services
 - **Preserves your wallpaper** — Backs up the original image and applies overlay on top
 - **Integrates with bgchanger** — When you change wallpaper with bgchanger, the service uses the new image
 
-### Installation
+### Installation (Recommended: GUI Installer)
 
-1. Download both `bgStatusService.exe` and the `install` folder from [Releases](https://github.com/amcchord/BackgroundChanger/releases)
+1. Download `bgStatusServiceSetup.exe` from [Releases](https://github.com/amcchord/BackgroundChanger/releases)
 
-2. Run the installer (will request admin privileges automatically):
+2. Double-click to run — it will request admin privileges automatically
+
+3. Choose "Install" and follow the prompts
+
+4. The service will run automatically on next boot, or start it immediately when prompted
+
+### Installation (PowerShell Scripts)
+
+Alternatively, download both `bgStatusService.exe` and the `install` folder:
+
 ```powershell
 .\install\install.ps1
 ```
 
-3. The service will run automatically on next boot, or start it immediately when prompted.
-
 ### Uninstallation
 
+**Using the GUI installer:**
+1. Run `bgStatusServiceSetup.exe`
+2. Choose "Uninstall"
+
+**Using PowerShell:**
 ```powershell
 .\install\uninstall.ps1
 ```
@@ -134,6 +161,9 @@ go build -o bgchanger.exe ./cmd/changer
 
 # Build bgStatusService
 go build -o bgStatusService.exe ./cmd/statusservice
+
+# Build bgStatusServiceSetup (GUI installer)
+go build -ldflags -H=windowsgui -o bgStatusServiceSetup.exe ./cmd/installer
 ```
 
 ## Project Structure
@@ -142,14 +172,16 @@ go build -o bgStatusService.exe ./cmd/statusservice
 BackgroundChanger/
 ├── cmd/
 │   ├── changer/          # bgchanger source
-│   └── statusservice/    # bgStatusService source
+│   ├── statusservice/    # bgStatusService source
+│   └── installer/        # GUI installer source
 ├── internal/
 │   ├── sysinfo/          # System information gathering
 │   ├── overlay/          # Image text rendering
-│   └── loginscreen/      # Login screen management
+│   ├── loginscreen/      # Login screen management
+│   └── installer/        # Installer dialogs and service management
 ├── install/
-│   ├── install.ps1       # Service installer
-│   └── uninstall.ps1     # Service uninstaller
+│   ├── install.ps1       # Service installer (PowerShell)
+│   └── uninstall.ps1     # Service uninstaller (PowerShell)
 └── assets/
     └── fonts/            # Embedded fonts
 ```

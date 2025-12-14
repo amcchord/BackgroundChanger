@@ -116,14 +116,28 @@ func runStatusUpdate(elog debug.Log) error {
 	infoLines := sysInfo.FormatLines()
 	elog.Info(1, fmt.Sprintf("System info: %d lines", len(infoLines)))
 
-	// Step 3: Render the overlay
+	// Step 3: Gather services information
+	elog.Info(1, "Gathering services information...")
+	servicesInfo, err := sysinfo.GatherServices()
+	if err != nil {
+		elog.Warning(1, fmt.Sprintf("Failed to gather services info: %v (continuing anyway)", err))
+	}
+
+	var serviceLines []string
+	if servicesInfo != nil {
+		serviceLines = servicesInfo.FormatServiceLines()
+		elog.Info(1, fmt.Sprintf("Services info: %d lines, %d running, %d failed",
+			len(serviceLines), servicesInfo.RunningCount, len(servicesInfo.FailedServices)))
+	}
+
+	// Step 4: Render the dual-panel overlay
 	elog.Info(1, "Rendering overlay...")
-	resultImage, err := overlay.RenderOverlay(sourceImage, infoLines)
+	resultImage, err := overlay.RenderDualPanelOverlay(sourceImage, serviceLines, infoLines)
 	if err != nil {
 		return fmt.Errorf("failed to render overlay: %v", err)
 	}
 
-	// Step 4: Save the modified image to the permanent data directory
+	// Step 5: Save the modified image to the permanent data directory
 	// Using a persistent location ensures the registry can reference it reliably
 	outputPath := filepath.Join(loginscreen.BackupDir, "current_loginscreen.jpg")
 
@@ -133,7 +147,7 @@ func runStatusUpdate(elog debug.Log) error {
 	}
 	elog.Info(1, fmt.Sprintf("Saved modified image to: %s", outputPath))
 
-	// Step 5: Set the modified image as the login screen
+	// Step 6: Set the modified image as the login screen
 	elog.Info(1, "Setting login screen...")
 	err = loginscreen.SetLoginScreenImage(outputPath)
 	if err != nil {

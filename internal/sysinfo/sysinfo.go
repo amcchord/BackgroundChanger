@@ -7,6 +7,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
@@ -25,6 +26,8 @@ type SystemInfo struct {
 	IPAddresses  []string
 	DiskInfo     []string
 	SerialNumber string
+	Uptime       string
+	GeneratedAt  string
 }
 
 // Win32_ComputerSystemProduct is used for WMI query to get serial number.
@@ -37,10 +40,51 @@ type Win32_VideoController struct {
 	Name string
 }
 
+// Win32_VideoControllerResolution is used for WMI query to get display resolution.
+type Win32_VideoControllerResolution struct {
+	CurrentHorizontalResolution uint32
+	CurrentVerticalResolution   uint32
+}
+
+// DisplayResolution contains the current display resolution.
+type DisplayResolution struct {
+	Width  int
+	Height int
+}
+
 // Win32_Processor is used for WMI query to get detailed CPU info.
 type Win32_Processor struct {
 	Name          string
 	NumberOfCores uint32
+}
+
+// Win32_Service is used for WMI query to get service information.
+type Win32_Service struct {
+	Name      string
+	State     string
+	StartMode string
+}
+
+// Win32_OperatingSystem is used for WMI query to detect Windows Server.
+type Win32_OperatingSystem struct {
+	Caption string
+}
+
+// ServiceStatus represents the status of a single service.
+type ServiceStatus struct {
+	Name    string
+	State   string
+	IsOK    bool
+}
+
+// ServicesSummary contains information about Windows services.
+type ServicesSummary struct {
+	RunningCount     int
+	StoppedCount     int
+	TotalCount       int
+	FailedServices   []ServiceStatus // Auto-start services that aren't running
+	CriticalServices []ServiceStatus // Status of critical services
+	IsServer         bool
 }
 
 // Gather collects all system information and returns a SystemInfo struct.
@@ -76,6 +120,12 @@ func Gather() (*SystemInfo, error) {
 	// Get serial number
 	info.SerialNumber = getSerialNumber()
 
+	// Get uptime
+	info.Uptime = getUptime()
+
+	// Get generation timestamp
+	info.GeneratedAt = time.Now().Format("Generated: Jan 2, 2006 3:04 PM")
+
 	return info, nil
 }
 
@@ -107,6 +157,16 @@ func (s *SystemInfo) FormatLines() []string {
 
 	if s.SerialNumber != "" && s.SerialNumber != "Unknown" {
 		lines = append(lines, fmt.Sprintf("SN: %s", s.SerialNumber))
+	}
+
+	// Add uptime
+	if s.Uptime != "" {
+		lines = append(lines, fmt.Sprintf("Uptime: %s", s.Uptime))
+	}
+
+	// Add generation timestamp
+	if s.GeneratedAt != "" {
+		lines = append(lines, s.GeneratedAt)
 	}
 
 	return lines
@@ -290,5 +350,241 @@ func getSerialNumber() string {
 	}
 
 	return serial
+}
+
+func getUptime() string {
+	uptime, err := host.Uptime()
+	if err != nil {
+		return "Unknown"
+	}
+
+	// Convert seconds to days, hours, minutes
+	days := uptime / 86400
+	hours := (uptime % 86400) / 3600
+	minutes := (uptime % 3600) / 60
+
+	// Format based on duration
+	if days > 0 {
+		return fmt.Sprintf("%dd %dh %dm", days, hours, minutes)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm", hours, minutes)
+	}
+	return fmt.Sprintf("%dm", minutes)
+}
+
+// GetDisplayResolution queries the current display resolution from the system.
+// Returns the primary monitor's resolution, or a default of 1920x1080 if unable to detect.
+func GetDisplayResolution() DisplayResolution {
+	// Default resolution as fallback
+	defaultRes := DisplayResolution{Width: 1920, Height: 1080}
+
+	// Query Win32_VideoController for current resolution
+	var controllers []struct {
+		CurrentHorizontalResolution uint32
+		CurrentVerticalResolution   uint32
+	}
+
+	err := wmi.Query("SELECT CurrentHorizontalResolution, CurrentVerticalResolution FROM Win32_VideoController WHERE CurrentHorizontalResolution IS NOT NULL", &controllers)
+	if err != nil || len(controllers) == 0 {
+		return defaultRes
+	}
+
+	// Use the first controller with valid resolution
+	for _, ctrl := range controllers {
+		if ctrl.CurrentHorizontalResolution > 0 && ctrl.CurrentVerticalResolution > 0 {
+			return DisplayResolution{
+				Width:  int(ctrl.CurrentHorizontalResolution),
+				Height: int(ctrl.CurrentVerticalResolution),
+			}
+		}
+	}
+
+	return defaultRes
+}
+
+// isWindowsServer checks if the current OS is Windows Server.
+func isWindowsServer() bool {
+	var osInfo []Win32_OperatingSystem
+	err := wmi.Query("SELECT Caption FROM Win32_OperatingSystem", &osInfo)
+	if err != nil || len(osInfo) == 0 {
+		return false
+	}
+
+	caption := strings.ToLower(osInfo[0].Caption)
+	return strings.Contains(caption, "server")
+}
+
+// getCriticalServiceNames returns a list of critical service names based on OS type.
+func getCriticalServiceNames(isServer bool) []string {
+	// Desktop critical services
+	services := []string{
+		"Dhcp",           // DHCP Client
+		"Dnscache",       // DNS Client
+		"wuauserv",       // Windows Update
+		"WinDefend",      // Windows Defender
+		"Spooler",        // Print Spooler
+		"EventLog",       // Windows Event Log
+		"Schedule",       // Task Scheduler
+		"W32Time",        // Windows Time
+	}
+
+	// Add server-specific services
+	if isServer {
+		serverServices := []string{
+			"NTDS",         // Active Directory Domain Services
+			"DNS",          // DNS Server
+			"DHCPServer",   // DHCP Server
+			"W3SVC",        // IIS World Wide Web Publishing Service
+			"MSSQLSERVER",  // SQL Server
+			"vmms",         // Hyper-V Virtual Machine Management
+			"CertSvc",      // Active Directory Certificate Services
+			"Netlogon",     // Netlogon (domain controller)
+			"DFSR",         // DFS Replication
+			"LanmanServer", // Server (file sharing)
+		}
+		services = append(services, serverServices...)
+	}
+
+	return services
+}
+
+// GatherServices collects information about Windows services.
+func GatherServices() (*ServicesSummary, error) {
+	summary := &ServicesSummary{}
+	summary.IsServer = isWindowsServer()
+
+	// Query all services
+	var services []Win32_Service
+	err := wmi.Query("SELECT Name, State, StartMode FROM Win32_Service", &services)
+	if err != nil {
+		return summary, fmt.Errorf("failed to query services: %v", err)
+	}
+
+	summary.TotalCount = len(services)
+
+	// Build a map for quick lookup
+	serviceMap := make(map[string]Win32_Service)
+	for _, svc := range services {
+		serviceMap[svc.Name] = svc
+
+		if svc.State == "Running" {
+			summary.RunningCount++
+		} else {
+			summary.StoppedCount++
+		}
+
+		// Check for failed services (auto-start but not running)
+		if svc.StartMode == "Auto" && svc.State != "Running" {
+			summary.FailedServices = append(summary.FailedServices, ServiceStatus{
+				Name:  svc.Name,
+				State: svc.State,
+				IsOK:  false,
+			})
+		}
+	}
+
+	// Check critical services
+	criticalNames := getCriticalServiceNames(summary.IsServer)
+	for _, name := range criticalNames {
+		svc, exists := serviceMap[name]
+		if !exists {
+			// Service not installed, skip it (common for server services on desktop)
+			continue
+		}
+
+		isOK := svc.State == "Running"
+		summary.CriticalServices = append(summary.CriticalServices, ServiceStatus{
+			Name:  name,
+			State: svc.State,
+			IsOK:  isOK,
+		})
+	}
+
+	return summary, nil
+}
+
+// FormatServiceLines returns the services summary as a slice of strings for display.
+func (s *ServicesSummary) FormatServiceLines() []string {
+	lines := []string{}
+
+	// Header
+	lines = append(lines, "Services Status")
+	lines = append(lines, "")
+
+	// Summary line
+	lines = append(lines, fmt.Sprintf("Running: %d / %d", s.RunningCount, s.TotalCount))
+
+	// Critical services status
+	if len(s.CriticalServices) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "Critical Services:")
+
+		for _, svc := range s.CriticalServices {
+			status := "OK"
+			if !svc.IsOK {
+				status = svc.State
+			}
+			// Use friendly names for common services
+			displayName := getServiceDisplayName(svc.Name)
+			lines = append(lines, fmt.Sprintf("  %s: %s", displayName, status))
+		}
+	}
+
+	// Failed services (auto-start but not running)
+	if len(s.FailedServices) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "Failed Services:")
+
+		// Limit to first 10 to avoid overflow
+		count := len(s.FailedServices)
+		if count > 10 {
+			count = 10
+		}
+
+		for i := 0; i < count; i++ {
+			svc := s.FailedServices[i]
+			displayName := getServiceDisplayName(svc.Name)
+			lines = append(lines, fmt.Sprintf("  %s: %s", displayName, svc.State))
+		}
+
+		if len(s.FailedServices) > 10 {
+			lines = append(lines, fmt.Sprintf("  ... and %d more", len(s.FailedServices)-10))
+		}
+	} else {
+		lines = append(lines, "")
+		lines = append(lines, "No failed services")
+	}
+
+	return lines
+}
+
+// getServiceDisplayName returns a friendly display name for common services.
+func getServiceDisplayName(serviceName string) string {
+	displayNames := map[string]string{
+		"Dhcp":         "DHCP Client",
+		"Dnscache":     "DNS Client",
+		"wuauserv":     "Windows Update",
+		"WinDefend":    "Windows Defender",
+		"Spooler":      "Print Spooler",
+		"EventLog":     "Event Log",
+		"Schedule":     "Task Scheduler",
+		"W32Time":      "Windows Time",
+		"NTDS":         "AD Domain Services",
+		"DNS":          "DNS Server",
+		"DHCPServer":   "DHCP Server",
+		"W3SVC":        "IIS Web Server",
+		"MSSQLSERVER":  "SQL Server",
+		"vmms":         "Hyper-V Manager",
+		"CertSvc":      "Certificate Services",
+		"Netlogon":     "Netlogon",
+		"DFSR":         "DFS Replication",
+		"LanmanServer": "File Server",
+	}
+
+	if displayName, exists := displayNames[serviceName]; exists {
+		return displayName
+	}
+	return serviceName
 }
 
