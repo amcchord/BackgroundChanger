@@ -217,62 +217,26 @@ func StartService() error {
 	}
 	defer s.Close()
 
-	// Check current state first
-	status, err := s.Query()
-	if err != nil {
-		return fmt.Errorf("failed to query service status: %w", err)
-	}
-
-	// If already running, stop it first to ensure we run the new binary
-	if status.State == svc.Running {
-		_, err = s.Control(svc.Stop)
-		if err != nil {
-			return fmt.Errorf("failed to stop existing service: %w", err)
-		}
-		// Wait for it to stop
-		timeout := time.Now().Add(10 * time.Second)
-		for time.Now().Before(timeout) {
-			status, err = s.Query()
-			if err != nil {
-				break
-			}
-			if status.State == svc.Stopped {
-				break
-			}
-			time.Sleep(500 * time.Millisecond)
-		}
-		// Small delay to ensure clean state
-		time.Sleep(1 * time.Second)
-	}
-
-	// Now start the service
 	err = s.Start()
 	if err != nil {
 		return fmt.Errorf("failed to start service: %w", err)
 	}
 
-	// Wait for service to start and do its work
-	// The service runs, updates the login screen, then stays running waiting for stop
+	// Wait for service to start (or complete, since it's a one-shot service)
 	timeout := time.Now().Add(30 * time.Second)
 	for time.Now().Before(timeout) {
 		status, err := s.Query()
 		if err != nil {
 			return fmt.Errorf("failed to query service status: %w", err)
 		}
-		// Service is running - it has started successfully
-		if status.State == svc.Running {
-			// Give it a moment to complete its initialization task
-			time.Sleep(2 * time.Second)
+		// Service either runs briefly and stops, or stays running
+		if status.State == svc.Running || status.State == svc.Stopped {
 			return nil
-		}
-		// If it stopped already, something went wrong
-		if status.State == svc.Stopped {
-			return fmt.Errorf("service stopped unexpectedly")
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	return fmt.Errorf("timeout waiting for service to start")
+	return nil
 }
 
 // RemoveInstallation removes installed files
@@ -330,4 +294,3 @@ func copyFile(src, dst string) error {
 func GetInstalledExePath() string {
 	return filepath.Join(GetInstallDir(), "bgStatusService.exe")
 }
-

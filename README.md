@@ -87,7 +87,7 @@ A Windows service that overlays system information on your login screen backgrou
 
 - **Runs at boot** — Updates the login screen before any user logs in
 - **Smart text color** — Automatically chooses white or black text based on background brightness
-- **Resolution-aware scaling** — Detects your display resolution and scales text appropriately (readable from 1024x768 to 4K+)
+- **Resolution-aware scaling** — Detects your display resolution and scales text appropriately (readable from 1024x768, compact on 4K+)
 - **Dual panel layout** — Services status on the left, system info on the right
 - **Windows Server support** — Automatically detects Server editions and monitors server-specific services
 - **Preserves your wallpaper** — Backs up the original image and applies overlay on top

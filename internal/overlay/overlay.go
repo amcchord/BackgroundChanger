@@ -80,6 +80,9 @@ const (
 
 	// MinScaleFactor is the minimum scale factor (for 1024x768 readability).
 	MinScaleFactor = 0.6
+	// MaxScaleFactor caps scaling on high-res displays to keep text compact.
+	// At 1.0, text on 4K displays stays the same size as on 1080p.
+	MaxScaleFactor = 1.0
 	// MinFontSize is the minimum font size for readability.
 	MinFontSize = 12
 )
@@ -137,6 +140,11 @@ func calculateScaledDimensionsForResolution(width, height int) ScaledDimensions 
 	// Apply minimum scale factor for readability
 	if scale < MinScaleFactor {
 		scale = MinScaleFactor
+	}
+
+	// Cap maximum scale factor to keep text compact on high-res displays
+	if scale > MaxScaleFactor {
+		scale = MaxScaleFactor
 	}
 
 	// Calculate scaled font size with minimum
