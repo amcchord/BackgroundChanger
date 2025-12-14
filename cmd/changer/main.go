@@ -16,6 +16,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/backgroundchanger/internal/loginscreen"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
@@ -144,9 +145,14 @@ func downloadImage(imageURL string) (string, error) {
 		return "", fmt.Errorf("unsupported image format: %s", ext)
 	}
 
-	// Create a temporary file
-	tempDir := os.TempDir()
-	tempFile := filepath.Join(tempDir, fmt.Sprintf("bgchanger_%d%s", time.Now().UnixNano(), ext))
+	// Save to a persistent location so the registry can reference it reliably
+	// Using ProgramData ensures the file survives reboots and temp cleanup
+	persistentDir := filepath.Join(os.Getenv("PROGRAMDATA"), "BgChanger")
+	err = os.MkdirAll(persistentDir, 0755)
+	if err != nil {
+		return "", fmt.Errorf("failed to create persistent directory: %v", err)
+	}
+	tempFile := filepath.Join(persistentDir, fmt.Sprintf("wallpaper%s", ext))
 
 	// Create the file
 	out, err := os.Create(tempFile)
@@ -888,6 +894,15 @@ func main() {
 	} else {
 		fmt.Println("Login screen background setup completed!")
 		loginScreenSuccess = true
+
+		// Invalidate the BgStatusService backup so it uses this new image
+		// This ensures the status overlay uses the new wallpaper as its base
+		err = loginscreen.InvalidateBackup()
+		if err != nil {
+			fmt.Printf("Note: Could not invalidate status service backup: %v\n", err)
+		} else {
+			fmt.Println("BgStatusService backup invalidated (will use new image on next boot)")
+		}
 	}
 
 	// Summary
