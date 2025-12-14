@@ -1,9 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"math/rand"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,6 +34,136 @@ var supportedExtensions = map[string]bool{
 	".jpeg": true,
 	".png":  true,
 	".bmp":  true,
+}
+
+// WallpaperEntry represents an image entry from the slide.recipes API
+type WallpaperEntry struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
+}
+
+// Slide.recipes wallpaper directory URL
+const slideRecipesURL = "https://www.slide.recipes/bg/"
+
+// isURL checks if the input string is a URL (http:// or https://)
+func isURL(input string) bool {
+	if strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://") {
+		return true
+	}
+	return false
+}
+
+// fetchRandomWallpaperURL fetches the image list from slide.recipes and returns a random image URL
+func fetchRandomWallpaperURL() (string, error) {
+	fmt.Printf("Fetching wallpaper list from %s\n", slideRecipesURL)
+
+	// Make HTTP request to get the JSON list
+	resp, err := http.Get(slideRecipesURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch wallpaper list: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Check for successful response
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to fetch wallpaper list: HTTP %d", resp.StatusCode)
+	}
+
+	// Read the response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response: %v", err)
+	}
+
+	// Parse the JSON response
+	var wallpapers []WallpaperEntry
+	err = json.Unmarshal(body, &wallpapers)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse wallpaper list: %v", err)
+	}
+
+	// Check if we got any wallpapers
+	if len(wallpapers) == 0 {
+		return "", fmt.Errorf("no wallpapers found in the list")
+	}
+
+	// Randomly select one wallpaper
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	selected := wallpapers[r.Intn(len(wallpapers))]
+
+	fmt.Printf("Selected wallpaper: %s\n", selected.Name)
+	return selected.URL, nil
+}
+
+// downloadImage downloads an image from a URL and saves it to a temporary file
+func downloadImage(imageURL string) (string, error) {
+	fmt.Printf("Downloading image from URL: %s\n", imageURL)
+
+	// Parse the URL to extract the filename
+	parsedURL, err := url.Parse(imageURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid URL: %v", err)
+	}
+
+	// Make the HTTP request
+	resp, err := http.Get(imageURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to download image: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Check for successful response
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to download image: HTTP %d", resp.StatusCode)
+	}
+
+	// Validate content type is an image
+	contentType := resp.Header.Get("Content-Type")
+	if !strings.HasPrefix(contentType, "image/") {
+		return "", fmt.Errorf("URL does not point to an image (Content-Type: %s)", contentType)
+	}
+
+	// Determine the file extension
+	ext := filepath.Ext(parsedURL.Path)
+	if ext == "" {
+		// Try to determine extension from content type
+		switch contentType {
+		case "image/jpeg":
+			ext = ".jpg"
+		case "image/png":
+			ext = ".png"
+		case "image/bmp":
+			ext = ".bmp"
+		default:
+			ext = ".jpg" // Default to jpg
+		}
+	}
+
+	// Check if the extension is supported
+	if !supportedExtensions[strings.ToLower(ext)] {
+		return "", fmt.Errorf("unsupported image format: %s", ext)
+	}
+
+	// Create a temporary file
+	tempDir := os.TempDir()
+	tempFile := filepath.Join(tempDir, fmt.Sprintf("bgchanger_%d%s", time.Now().UnixNano(), ext))
+
+	// Create the file
+	out, err := os.Create(tempFile)
+	if err != nil {
+		return "", fmt.Errorf("failed to create temporary file: %v", err)
+	}
+	defer out.Close()
+
+	// Copy the response body to the file
+	_, err = io.Copy(out, resp.Body)
+	if err != nil {
+		os.Remove(tempFile)
+		return "", fmt.Errorf("failed to save image: %v", err)
+	}
+
+	fmt.Printf("Image downloaded to: %s\n", tempFile)
+	return tempFile, nil
 }
 
 // isAdmin checks if the current process is running with administrator privileges
@@ -618,26 +752,81 @@ func getRandomImage(dirPath string) (string, error) {
 	return images[r.Intn(len(images))], nil
 }
 
+func printHelp() {
+	fmt.Println("Usage: bgchanger [option]")
+	fmt.Println("\nThis tool changes your desktop wallpaper, lock screen, and login screen background.")
+	fmt.Println("\nOptions:")
+	fmt.Println("  (no args)       Download a random wallpaper from slide.recipes")
+	fmt.Println("  <image_path>    Set a specific image as wallpaper (jpg, jpeg, png, bmp)")
+	fmt.Println("  <directory>     Pick a random image from a local directory")
+	fmt.Println("  <url>           Download and set an image from a URL")
+	fmt.Println("  help            Show this help message")
+	fmt.Println("\nExamples:")
+	fmt.Println("  bgchanger")
+	fmt.Println("  bgchanger C:\\Pictures\\wallpaper.jpg")
+	fmt.Println("  bgchanger C:\\Pictures\\Wallpapers")
+	fmt.Println("  bgchanger https://example.com/image.png")
+	fmt.Println("\nNote: The app will automatically request administrator privileges if needed.")
+}
+
 func main() {
-	// Check if argument is provided
-	if len(os.Args) < 2 {
-		fmt.Println("Usage: changer <path to image or directory>")
-		fmt.Println("\nThis tool will change:")
-		fmt.Println("- Desktop wallpaper")
-		fmt.Println("- Lock screen wallpaper")
-		fmt.Println("- Login screen background (sign-in screen)")
-		fmt.Println("\nNote: The app will automatically request administrator privileges if needed.")
-		os.Exit(1)
+	// Check for help argument first (no privilege escalation needed)
+	if len(os.Args) >= 2 {
+		input := os.Args[1]
+		if input == "help" || input == "--help" || input == "-h" {
+			printHelp()
+			os.Exit(0)
+		}
 	}
 
-	// Get path from argument
-	path := os.Args[1]
+	// Check if input is a URL - handle before checking local paths
+	var imagePath string
+	var err error
 
-	// Check if path exists before attempting elevation
-	info, err := os.Stat(path)
-	if err != nil {
-		fmt.Printf("Error: %v\n", err)
-		os.Exit(1)
+	// No arguments or "random" - fetch random wallpaper from slide.recipes
+	if len(os.Args) < 2 {
+		randomURL, err := fetchRandomWallpaperURL()
+		if err != nil {
+			fmt.Printf("Error fetching random wallpaper: %v\n", err)
+			os.Exit(1)
+		}
+		imagePath, err = downloadImage(randomURL)
+		if err != nil {
+			fmt.Printf("Error downloading image: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		input := os.Args[1]
+		if isURL(input) {
+			// Download the image from URL first (before elevation to validate URL)
+			imagePath, err = downloadImage(input)
+			if err != nil {
+				fmt.Printf("Error downloading image: %v\n", err)
+				os.Exit(1)
+			}
+		} else {
+			// Check if path exists before attempting elevation
+			info, err := os.Stat(input)
+			if err != nil {
+				fmt.Printf("Error: %v\n", err)
+				os.Exit(1)
+			}
+
+			if info.IsDir() {
+				// If it's a directory, get a random image
+				imagePath, err = getRandomImage(input)
+				if err != nil {
+					fmt.Printf("Error: %v\n", err)
+					os.Exit(1)
+				}
+				fmt.Printf("Selected image: %s\n", imagePath)
+			} else if !isImage(input) {
+				fmt.Printf("Error: %s is not a supported image file\n", input)
+				os.Exit(1)
+			} else {
+				imagePath = input
+			}
+		}
 	}
 
 	// Check for admin privileges and elevate if needed
@@ -659,20 +848,6 @@ func main() {
 	}
 
 	fmt.Println("Running with administrator privileges.")
-
-	imagePath := path
-	if info.IsDir() {
-		// If it's a directory, get a random image
-		imagePath, err = getRandomImage(path)
-		if err != nil {
-			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("Selected image: %s\n", imagePath)
-	} else if !isImage(path) {
-		fmt.Printf("Error: %s is not a supported image file\n", path)
-		os.Exit(1)
-	}
 
 	// Track results for summary
 	desktopSuccess := false
