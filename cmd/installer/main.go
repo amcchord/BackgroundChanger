@@ -167,7 +167,7 @@ func runInstall() {
 
 		// Step 5: Start service
 		pw.SetStatus("Starting service...")
-		pw.SetProgress(85)
+		pw.SetProgress(90)
 		processMessagesWithDelay(pw, 200)
 
 		err = installer.StartService()
@@ -176,15 +176,6 @@ func runInstall() {
 			pw.SetComplete(true, "Installed "+version+" (service will start at next boot)")
 			return
 		}
-
-		// Step 6: Refresh group policy so the new lock screen takes effect immediately
-		pw.SetStatus("Applying settings...")
-		pw.SetProgress(95)
-		pw.ProcessMessages()
-
-		// Run gpupdate to refresh group policy
-		gpupdateCmd := exec.Command("gpupdate", "/force")
-		gpupdateCmd.Run() // Ignore errors, not critical
 
 		// Complete!
 		if installError == nil {

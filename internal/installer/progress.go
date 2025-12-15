@@ -252,7 +252,7 @@ func NewProgressWindow(title string) *ProgressWindow {
 		CbSize:        uint32(unsafe.Sizeof(WNDCLASSEXW{})),
 		LpfnWndProc:   syscall.NewCallback(wndProc),
 		HInstance:     pw.hInstance,
-		HbrBackground: syscall.Handle(6), // COLOR_WINDOW + 1
+		HbrBackground: syscall.Handle(16), // COLOR_BTNFACE + 1 (standard grey dialog background)
 		LpszClassName: pw.className,
 	}
 
