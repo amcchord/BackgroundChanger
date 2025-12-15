@@ -165,15 +165,28 @@ func runInstall() {
 			return
 		}
 
-		// Step 5: Start service
+		// Step 5: Start service (creates the image)
 		pw.SetStatus("Starting service...")
-		pw.SetProgress(90)
+		pw.SetProgress(85)
 		processMessagesWithDelay(pw, 200)
 
 		err = installer.StartService()
 		if err != nil {
 			// Service installed but failed to start - still mark as success
 			pw.SetComplete(true, "Installed "+version+" (service will start at next boot)")
+			return
+		}
+
+		// Step 6: Wait for image to be created and apply it as user
+		pw.SetStatus("Applying lock screen...")
+		pw.SetProgress(95)
+		processMessagesWithDelay(pw, 500) // Give service time to create image
+
+		// Find the latest loginscreen image and apply it via WinRT (runs as current user)
+		applyErr := applyLockScreenAsUser()
+		if applyErr != nil {
+			// Service worked but WinRT failed - still success, will work on reboot
+			pw.SetComplete(true, "Installed "+version+"! Lock screen will update on next sign-in.")
 			return
 		}
 
@@ -282,4 +295,74 @@ func processMessagesWithDelay(pw *installer.ProgressWindow, delayMs int) {
 	// Add delay so user can see the progress
 	time.Sleep(time.Duration(delayMs) * time.Millisecond)
 	pw.ProcessMessages()
+}
+
+// applyLockScreenAsUser finds the latest loginscreen image and applies it via WinRT
+// This runs as the current user (not SYSTEM) so WinRT works properly
+func applyLockScreenAsUser() error {
+	// Find the latest loginscreen_*.jpg file
+	dataDir := installer.GetDataDir()
+	imagePath, err := findLatestLoginScreenImage(dataDir)
+	if err != nil {
+		return err
+	}
+
+	// Run PowerShell WinRT command to set lock screen
+	psScript := `
+$ErrorActionPreference = "Stop"
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation` + "`" + `1' })[0]
+Function Await($WinRtTask, $ResultType) {
+    $asTask = $asTaskGeneric.MakeGenericMethod($ResultType)
+    $netTask = $asTask.Invoke($null, @($WinRtTask))
+    $netTask.Wait(-1) | Out-Null
+    $netTask.Result
+}
+Function AwaitAction($WinRtTask) {
+    $asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and !$_.IsGenericMethod })[0]
+    $netTask = $asTask.Invoke($null, @($WinRtTask))
+    $netTask.Wait(-1) | Out-Null
+}
+[Windows.System.UserProfile.LockScreen,Windows.System.UserProfile,ContentType=WindowsRuntime] | Out-Null
+[Windows.Storage.StorageFile,Windows.Storage,ContentType=WindowsRuntime] | Out-Null
+$file = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync('` + imagePath + `')) ([Windows.Storage.StorageFile])
+AwaitAction ([Windows.System.UserProfile.LockScreen]::SetImageFileAsync($file))
+`
+
+	cmd := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psScript)
+	return cmd.Run()
+}
+
+// findLatestLoginScreenImage finds the most recent loginscreen_*.jpg in the data directory
+func findLatestLoginScreenImage(dir string) (string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", err
+	}
+
+	var latestPath string
+	var latestTime time.Time
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		// Look for loginscreen_*.jpg files
+		if len(name) > 12 && name[:12] == "loginscreen_" && name[len(name)-4:] == ".jpg" {
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			if info.ModTime().After(latestTime) {
+				latestTime = info.ModTime()
+				latestPath = dir + "\\" + name
+			}
+		}
+	}
+
+	if latestPath == "" {
+		return "", os.ErrNotExist
+	}
+	return latestPath, nil
 }
