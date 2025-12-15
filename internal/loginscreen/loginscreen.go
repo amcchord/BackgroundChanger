@@ -175,30 +175,34 @@ func SetLoginScreenImage(imagePath string) error {
 		return fmt.Errorf("image file does not exist: %v", err)
 	}
 
-	// Try multiple methods
+	// Try multiple methods - WinRT is the most reliable for immediate effect
 	var anySuccess bool
 	var lastError error
 
-	// Method 1: Group Policy Registry (most reliable)
-	err = setLoginScreenViaGroupPolicy(absPath)
-	if err != nil {
-		lastError = err
-	} else {
-		anySuccess = true
-	}
-
-	// Method 2: OOBE background folder
-	err = setLoginScreenViaOOBE(absPath)
-	if err != nil {
-		lastError = err
-	} else {
-		anySuccess = true
-	}
-
-	// Method 3: WinRT API via PowerShell
+	// Method 1: WinRT API via PowerShell (PRIMARY - works immediately at user level)
 	err = setLoginScreenViaWinRT(absPath)
 	if err != nil {
 		lastError = err
+	} else {
+		anySuccess = true
+	}
+
+	// Method 2: Group Policy Registry (fallback - may require reboot/gpupdate)
+	err = setLoginScreenViaGroupPolicy(absPath)
+	if err != nil {
+		if lastError == nil {
+			lastError = err
+		}
+	} else {
+		anySuccess = true
+	}
+
+	// Method 3: OOBE background folder (fallback for older Windows versions)
+	err = setLoginScreenViaOOBE(absPath)
+	if err != nil {
+		if lastError == nil {
+			lastError = err
+		}
 	} else {
 		anySuccess = true
 	}
