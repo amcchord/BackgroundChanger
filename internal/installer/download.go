@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const (
@@ -185,4 +186,87 @@ func DownloadLatestService() (filePath string, version string, err error) {
 
 	return destPath, release.TagName, nil
 }
+
+// DownloadStatusCallback is called with status updates during download
+type DownloadStatusCallback func(status string, progressPercent int)
+
+// DownloadLatestServiceWithProgress downloads the latest version with progress updates
+func DownloadLatestServiceWithProgress(statusCallback DownloadStatusCallback) (filePath string, version string, err error) {
+	// Get latest release info
+	statusCallback("Fetching release info from GitHub...", 30)
+	
+	release, err := GetLatestRelease()
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get release info: %w", err)
+	}
+
+	// Find the service executable asset
+	asset, err := FindServiceAsset(release)
+	if err != nil {
+		return "", "", err
+	}
+
+	// Download to temp directory
+	tempDir := os.TempDir()
+	destPath := filepath.Join(tempDir, ServiceExeName)
+
+	// Format the download URL for display (shorten it)
+	shortURL := asset.BrowserDownloadURL
+	if len(shortURL) > 60 {
+		shortURL = shortURL[:57] + "..."
+	}
+
+	// Track download progress with speed calculation
+	startTime := time.Now()
+	lastUpdate := startTime
+	lastBytes := int64(0)
+
+	progressCallback := func(downloaded, total int64) {
+		now := time.Now()
+		elapsed := now.Sub(lastUpdate)
+		
+		// Update at most every 100ms to avoid UI flicker
+		if elapsed < 100*time.Millisecond {
+			return
+		}
+
+		// Calculate speed
+		bytesSinceLastUpdate := downloaded - lastBytes
+		speed := float64(bytesSinceLastUpdate) / elapsed.Seconds()
+		lastUpdate = now
+		lastBytes = downloaded
+
+		// Format sizes and speed
+		downloadedMB := float64(downloaded) / (1024 * 1024)
+		totalMB := float64(total) / (1024 * 1024)
+		speedKBs := speed / 1024
+
+		var speedStr string
+		if speedKBs >= 1024 {
+			speedStr = fmt.Sprintf("%.1f MB/s", speedKBs/1024)
+		} else {
+			speedStr = fmt.Sprintf("%.0f KB/s", speedKBs)
+		}
+
+		// Calculate progress percentage (40-65 range for download phase)
+		percent := 40
+		if total > 0 {
+			percent = 40 + int(float64(downloaded)/float64(total)*25)
+		}
+
+		status := fmt.Sprintf("Downloading %s\n%.1f / %.1f MB (%s)", 
+			shortURL, downloadedMB, totalMB, speedStr)
+		statusCallback(status, percent)
+	}
+
+	statusCallback(fmt.Sprintf("Downloading from:\n%s", shortURL), 40)
+	
+	err = DownloadFile(asset.BrowserDownloadURL, destPath, progressCallback)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to download: %w", err)
+	}
+
+	return destPath, release.TagName, nil
+}
+
 

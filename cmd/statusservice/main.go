@@ -8,6 +8,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/debug"
@@ -138,14 +140,18 @@ func runStatusUpdate(elog debug.Log) error {
 	}
 
 	// Step 5: Save the modified image to the permanent data directory
-	// Using a persistent location ensures the registry can reference it reliably
-	outputPath := filepath.Join(loginscreen.BackupDir, "current_loginscreen.jpg")
+	// Using a unique filename with timestamp to bypass Windows lock screen cache
+	timestamp := fmt.Sprintf("%d", time.Now().Unix())
+	outputPath := filepath.Join(loginscreen.BackupDir, "loginscreen_"+timestamp+".jpg")
 
 	err = loginscreen.SaveImage(resultImage, outputPath)
 	if err != nil {
 		return fmt.Errorf("failed to save modified image: %v", err)
 	}
 	elog.Info(1, fmt.Sprintf("Saved modified image to: %s", outputPath))
+
+	// Clean up old loginscreen images (keep only the current one)
+	cleanupOldLoginScreenImages(loginscreen.BackupDir, outputPath)
 
 	// Step 6: Set the modified image as the login screen
 	elog.Info(1, "Setting login screen...")
@@ -191,6 +197,32 @@ func (l *consoleLog) Warning(eid uint32, msg string) error {
 func (l *consoleLog) Error(eid uint32, msg string) error {
 	fmt.Printf("[ERROR] %s\n", msg)
 	return nil
+}
+
+// cleanupOldLoginScreenImages removes old loginscreen_*.jpg files except the current one
+func cleanupOldLoginScreenImages(dir, currentFile string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		// Only delete old loginscreen_*.jpg files
+		if strings.HasPrefix(name, "loginscreen_") && strings.HasSuffix(name, ".jpg") {
+			fullPath := filepath.Join(dir, name)
+			if fullPath != currentFile {
+				os.Remove(fullPath)
+			}
+		}
+		// Also delete legacy current_loginscreen.jpg
+		if name == "current_loginscreen.jpg" {
+			os.Remove(filepath.Join(dir, name))
+		}
+	}
 }
 
 func main() {

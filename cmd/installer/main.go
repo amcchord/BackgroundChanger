@@ -3,10 +3,10 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -92,87 +92,116 @@ func elevate() bool {
 	return ret > 32
 }
 
-// runInstall handles the installation flow
+// runInstall handles the installation flow with a progress window
 func runInstall() {
-	// Check if service already exists
-	exists, err := installer.ServiceExists()
-	if err != nil {
-		installer.ShowError("Error", fmt.Sprintf("Failed to check service status:\n%v", err))
-		return
-	}
+	// Create progress window
+	pw := installer.NewProgressWindow("BgStatusService Setup - Installing")
 
-	if exists {
-		// Ask if user wants to upgrade
-		if !installer.AskYesNo("Service Already Installed",
-			"BgStatusService is already installed.\n\n"+
-				"Would you like to upgrade to the latest version?") {
+	// Run installation in a goroutine so we can update the UI
+	go func() {
+		var installError error
+		var version string
+
+		// Step 1: Check existing installation
+		pw.SetStatus("Checking existing installation...")
+		pw.SetProgress(5)
+		processMessagesWithDelay(pw, 300)
+
+		exists, err := installer.ServiceExists()
+		if err != nil {
+			installError = err
+			pw.SetComplete(false, "Error: Failed to check service status")
 			return
 		}
 
-		// Stop and remove existing service
-		installer.ShowInfo("Upgrading", "Stopping existing service...")
+		// Step 2: Stop and remove existing service if it exists
+		if exists {
+			pw.SetStatus("Stopping existing service...")
+			pw.SetProgress(15)
+			processMessagesWithDelay(pw, 200)
 
-		if err := installer.StopService(); err != nil {
-			installer.ShowWarning("Warning", fmt.Sprintf("Could not stop service:\n%v\n\nContinuing anyway...", err))
+			_ = installer.StopService() // Ignore errors, service might not be running
+
+			pw.SetStatus("Removing old service...")
+			pw.SetProgress(25)
+			processMessagesWithDelay(pw, 200)
+
+			if err := installer.DeleteService(); err != nil {
+				installError = err
+				pw.SetComplete(false, "Error: Failed to remove existing service")
+				return
+			}
+		} else {
+			pw.SetProgress(25)
 		}
 
-		if err := installer.DeleteService(); err != nil {
-			installer.ShowError("Error", fmt.Sprintf("Failed to remove existing service:\n%v", err))
+		// Step 3: Download latest version with progress
+		pw.SetStatus("Connecting to GitHub...")
+		pw.SetProgress(35)
+		pw.ProcessMessages()
+
+		exePath, ver, err := installer.DownloadLatestServiceWithProgress(func(status string, percent int) {
+			pw.SetStatus(status)
+			pw.SetProgress(percent)
+			pw.ProcessMessages()
+		})
+		if err != nil {
+			installError = err
+			pw.SetComplete(false, "Error: Failed to download - "+err.Error())
 			return
 		}
-	}
+		version = ver
+		defer os.Remove(exePath) // Clean up temp file
 
-	// Download the latest version
-	installer.ShowInfo("Downloading", "Downloading the latest version from GitHub...\n\nThis may take a moment.")
+		// Step 4: Install service
+		pw.SetStatus("Installing service...")
+		pw.SetProgress(70)
+		processMessagesWithDelay(pw, 200)
 
-	exePath, version, err := installer.DownloadLatestService()
-	if err != nil {
-		installer.ShowError("Download Failed", fmt.Sprintf("Failed to download the latest version:\n%v", err))
-		return
-	}
+		err = installer.InstallService(exePath)
+		if err != nil {
+			installError = err
+			pw.SetComplete(false, "Error: Failed to install service")
+			return
+		}
 
-	// Install the service
-	err = installer.InstallService(exePath)
-	if err != nil {
-		installer.ShowError("Installation Failed", fmt.Sprintf("Failed to install service:\n%v", err))
-		// Clean up downloaded file
-		os.Remove(exePath)
-		return
-	}
+		// Step 5: Start service
+		pw.SetStatus("Starting service...")
+		pw.SetProgress(85)
+		processMessagesWithDelay(pw, 200)
 
-	// Clean up downloaded temp file
-	os.Remove(exePath)
-
-	// Ask if user wants to start the service now
-	startNow := installer.AskYesNo("Installation Complete",
-		fmt.Sprintf("BgStatusService %s has been installed successfully!\n\n"+
-			"The service will run automatically at next boot.\n\n"+
-			"Would you like to run it now?\n"+
-			"(You can then press Win+L to see the result)", version))
-
-	if startNow {
 		err = installer.StartService()
 		if err != nil {
-			installer.ShowWarning("Warning", fmt.Sprintf("Service installed but failed to start:\n%v\n\n"+
-				"The service will run at next boot.", err))
+			// Service installed but failed to start - still mark as success
+			pw.SetComplete(true, "Installed "+version+" (service will start at next boot)")
 			return
 		}
 
-		installer.ShowInfo("Success", "Service started successfully!\n\n"+
-			"Press Win+L (lock screen) to see your login screen with system info.")
-	} else {
-		installer.ShowInfo("Success", "Installation complete!\n\n"+
-			"The service will run at next boot.\n"+
-			"You can also start it manually from Services (services.msc).")
-	}
+		// Step 6: Refresh group policy so the new lock screen takes effect immediately
+		pw.SetStatus("Applying settings...")
+		pw.SetProgress(95)
+		pw.ProcessMessages()
+
+		// Run gpupdate to refresh group policy
+		gpupdateCmd := exec.Command("gpupdate", "/force")
+		gpupdateCmd.Run() // Ignore errors, not critical
+
+		// Complete!
+		if installError == nil {
+			pw.SetComplete(true, "Successfully installed "+version+"! Press Win+L to see your new login screen.")
+		}
+	}()
+
+	// Run message loop
+	pw.RunMessageLoop()
 }
 
-// runUninstall handles the uninstallation flow
+// runUninstall handles the uninstallation flow with a progress window
 func runUninstall() {
-	// Check if service exists
+	// Check if service is installed first
 	exists, err := installer.ServiceExists()
 	if err != nil {
-		installer.ShowError("Error", fmt.Sprintf("Failed to check service status:\n%v", err))
+		installer.ShowError("Error", "Failed to check service status")
 		return
 	}
 
@@ -181,81 +210,85 @@ func runUninstall() {
 		return
 	}
 
-	// Confirm uninstallation
-	if !installer.AskYesNo("Confirm Uninstall",
-		"Are you sure you want to uninstall BgStatusService?\n\n"+
-			"This will:\n"+
-			"• Stop and remove the Windows service\n"+
-			"• Remove installed files") {
-		return
-	}
+	// Create progress window
+	pw := installer.NewProgressWindow("BgStatusService Setup - Uninstalling")
 
-	// Stop the service
-	installer.ShowInfo("Uninstalling", "Stopping service...")
+	// Run uninstallation in a goroutine
+	go func() {
+		// Step 1: Stop service
+		pw.SetStatus("Stopping service...")
+		pw.SetProgress(15)
+		processMessagesWithDelay(pw, 300)
 
-	if err := installer.StopService(); err != nil {
-		installer.ShowWarning("Warning", fmt.Sprintf("Could not stop service:\n%v\n\nContinuing anyway...", err))
-	}
+		_ = installer.StopService() // Ignore errors
 
-	// Delete the service
-	if err := installer.DeleteService(); err != nil {
-		installer.ShowError("Error", fmt.Sprintf("Failed to remove service:\n%v", err))
-		return
-	}
+		// Step 2: Remove service
+		pw.SetStatus("Removing service...")
+		pw.SetProgress(35)
+		processMessagesWithDelay(pw, 300)
 
-	// Remove event log source
-	installer.RemoveEventLogSource()
-
-	// Ask about removing data (original background backup)
-	removeData := installer.AskYesNo("Remove Data?",
-		"Would you like to remove the data directory?\n\n"+
-			"This includes the backup of your original login screen background.\n"+
-			"If you keep it, the original background will remain modified.\n\n"+
-			"Remove data directory?")
-
-	// Remove installation files
-	if err := installer.RemoveInstallation(); err != nil {
-		installer.ShowWarning("Warning", fmt.Sprintf("Some files could not be removed:\n%v", err))
-	}
-
-	// Optionally remove data directory
-	if removeData {
-		if err := installer.RemoveDataDirectory(); err != nil {
-			installer.ShowWarning("Warning", fmt.Sprintf("Data directory could not be removed:\n%v", err))
+		if err := installer.DeleteService(); err != nil {
+			pw.SetComplete(false, "Error: Failed to remove service")
+			return
 		}
-	}
 
-	// Offer to restore original background
-	restoreOriginal := installer.AskYesNo("Restore Original Background?",
-		"Would you like to try to restore the original login screen background?\n\n"+
-			"This will run the restore command to reset your login screen.")
+		// Step 3: Remove event log source
+		installer.RemoveEventLogSource()
 
-	if restoreOriginal {
-		// Try to restore the original background using reg.exe
-		cmd := exec.Command("reg", "delete",
-			`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\PersonalizationCSP`,
-			"/v", "LockScreenImagePath", "/f")
-		cmd.Run()
+		// Step 4: Remove files
+		pw.SetStatus("Removing installation files...")
+		pw.SetProgress(55)
+		processMessagesWithDelay(pw, 300)
 
-		cmd = exec.Command("reg", "delete",
-			`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\PersonalizationCSP`,
-			"/v", "LockScreenImageStatus", "/f")
-		cmd.Run()
+		_ = installer.RemoveInstallation() // Ignore errors
 
-		cmd = exec.Command("reg", "delete",
-			`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\PersonalizationCSP`,
-			"/v", "LockScreenImageUrl", "/f")
-		cmd.Run()
+		// Step 5: Remove data directory
+		pw.SetStatus("Removing data directory...")
+		pw.SetProgress(65)
+		processMessagesWithDelay(pw, 200)
 
-		installer.ShowInfo("Uninstall Complete",
-			"BgStatusService has been uninstalled.\n\n"+
-				"The registry entries for the custom login screen have been removed.\n"+
-				"Your original login screen should be restored after a restart.")
-	} else {
-		installer.ShowInfo("Uninstall Complete",
-			"BgStatusService has been uninstalled.\n\n"+
-				"Note: Your login screen background may still show the modified image.\n"+
-				"Restart your computer to see any changes.")
-	}
+		_ = installer.RemoveDataDirectory() // Ignore errors
+
+		// Step 6: Clean registry (restore original background)
+		pw.SetStatus("Restoring original login screen...")
+		pw.SetProgress(80)
+		processMessagesWithDelay(pw, 200)
+
+		restoreOriginalBackground()
+
+		// Complete!
+		pw.SetProgress(100)
+		pw.SetComplete(true, "Uninstalled successfully! Your login screen will be restored after a restart.")
+	}()
+
+	// Run message loop
+	pw.RunMessageLoop()
 }
 
+// restoreOriginalBackground removes the custom login screen registry entries
+func restoreOriginalBackground() {
+	// Remove PersonalizationCSP registry entries
+	cmd := exec.Command("reg", "delete",
+		`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\PersonalizationCSP`,
+		"/v", "LockScreenImagePath", "/f")
+	cmd.Run()
+
+	cmd = exec.Command("reg", "delete",
+		`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\PersonalizationCSP`,
+		"/v", "LockScreenImageStatus", "/f")
+	cmd.Run()
+
+	cmd = exec.Command("reg", "delete",
+		`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\PersonalizationCSP`,
+		"/v", "LockScreenImageUrl", "/f")
+	cmd.Run()
+}
+
+// processMessagesWithDelay processes window messages and adds a small delay
+func processMessagesWithDelay(pw *installer.ProgressWindow, delayMs int) {
+	// Process any pending messages
+	pw.ProcessMessages()
+	// Add delay so user can see the progress
+	time.Sleep(time.Duration(delayMs) * time.Millisecond)
+	pw.ProcessMessages()
+}
