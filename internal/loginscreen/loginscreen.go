@@ -175,19 +175,19 @@ func SetLoginScreenImage(imagePath string) error {
 		return fmt.Errorf("image file does not exist: %v", err)
 	}
 
-	// Try multiple methods - WinRT is the most reliable for immediate effect
+	// Try multiple methods
 	var anySuccess bool
 	var lastError error
 
-	// Method 1: WinRT API via PowerShell (PRIMARY - works immediately at user level)
-	err = setLoginScreenViaWinRT(absPath)
+	// Method 1: PersonalizationCSP (MDM-style, works as SYSTEM for sign-in screen)
+	err = setLoginScreenViaPersonalizationCSP(absPath)
 	if err != nil {
 		lastError = err
 	} else {
 		anySuccess = true
 	}
 
-	// Method 2: Group Policy Registry (fallback - may require reboot/gpupdate)
+	// Method 2: Group Policy Registry (enterprise method for sign-in screen)
 	err = setLoginScreenViaGroupPolicy(absPath)
 	if err != nil {
 		if lastError == nil {
@@ -197,8 +197,18 @@ func SetLoginScreenImage(imagePath string) error {
 		anySuccess = true
 	}
 
-	// Method 3: OOBE background folder (fallback for older Windows versions)
+	// Method 3: OOBE background folder (older Windows versions)
 	err = setLoginScreenViaOOBE(absPath)
+	if err != nil {
+		if lastError == nil {
+			lastError = err
+		}
+	} else {
+		anySuccess = true
+	}
+
+	// Method 4: WinRT API (only works in user context, not as SYSTEM)
+	err = setLoginScreenViaWinRT(absPath)
 	if err != nil {
 		if lastError == nil {
 			lastError = err
@@ -209,6 +219,40 @@ func SetLoginScreenImage(imagePath string) error {
 
 	if !anySuccess {
 		return fmt.Errorf("all login screen methods failed, last error: %v", lastError)
+	}
+
+	return nil
+}
+
+// setLoginScreenViaPersonalizationCSP uses the MDM/Intune registry method.
+// This is designed for enterprise deployment and works well from SYSTEM context.
+func setLoginScreenViaPersonalizationCSP(absPath string) error {
+	key, _, err := registry.CreateKey(
+		registry.LOCAL_MACHINE,
+		`SOFTWARE\Microsoft\Windows\CurrentVersion\PersonalizationCSP`,
+		registry.ALL_ACCESS,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create PersonalizationCSP key: %v", err)
+	}
+	defer key.Close()
+
+	// Set the lock screen image path
+	err = key.SetStringValue("LockScreenImagePath", absPath)
+	if err != nil {
+		return fmt.Errorf("failed to set LockScreenImagePath: %v", err)
+	}
+
+	// Set the URL (same as path for local files)
+	err = key.SetStringValue("LockScreenImageUrl", absPath)
+	if err != nil {
+		return fmt.Errorf("failed to set LockScreenImageUrl: %v", err)
+	}
+
+	// Set status to 1 (enabled)
+	err = key.SetDWordValue("LockScreenImageStatus", 1)
+	if err != nil {
+		return fmt.Errorf("failed to set LockScreenImageStatus: %v", err)
 	}
 
 	return nil
