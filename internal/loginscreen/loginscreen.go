@@ -197,7 +197,17 @@ func SetLoginScreenImage(imagePath string) error {
 		anySuccess = true
 	}
 
-	// Method 3: OOBE background folder (older Windows versions)
+	// Method 3: Replace Windows default screen images (most aggressive)
+	err = setLoginScreenViaDefaultImages(absPath)
+	if err != nil {
+		if lastError == nil {
+			lastError = err
+		}
+	} else {
+		anySuccess = true
+	}
+
+	// Method 4: OOBE background folder (older Windows versions)
 	err = setLoginScreenViaOOBE(absPath)
 	if err != nil {
 		if lastError == nil {
@@ -207,7 +217,7 @@ func SetLoginScreenImage(imagePath string) error {
 		anySuccess = true
 	}
 
-	// Method 4: WinRT API (only works in user context, not as SYSTEM)
+	// Method 5: WinRT API (only works in user context, not as SYSTEM)
 	err = setLoginScreenViaWinRT(absPath)
 	if err != nil {
 		if lastError == nil {
@@ -256,6 +266,48 @@ func setLoginScreenViaPersonalizationCSP(absPath string) error {
 	}
 
 	return nil
+}
+
+// setLoginScreenViaDefaultImages replaces the Windows default lock screen images.
+// This is the most aggressive method - directly overwrites system default images.
+func setLoginScreenViaDefaultImages(absPath string) error {
+	systemRoot := os.Getenv("SystemRoot")
+	if systemRoot == "" {
+		systemRoot = `C:\Windows`
+	}
+
+	// Load the source image
+	srcImg, err := LoadImage(absPath)
+	if err != nil {
+		return fmt.Errorf("failed to load source image: %v", err)
+	}
+
+	// Windows default lock screen images location
+	screenDir := filepath.Join(systemRoot, "Web", "Screen")
+
+	// Replace all default screen images (img100.jpg through img105.jpg)
+	for i := 100; i <= 105; i++ {
+		targetPath := filepath.Join(screenDir, fmt.Sprintf("img%d.jpg", i))
+
+		// Try to take ownership and set permissions (requires admin)
+		takeOwnership(targetPath)
+
+		// Save the image
+		err := SaveImage(srcImg, targetPath)
+		if err != nil {
+			// Continue trying other files even if one fails
+			continue
+		}
+	}
+
+	return nil
+}
+
+// takeOwnership attempts to take ownership of a file (for replacing system files)
+func takeOwnership(filePath string) {
+	// Use takeown and icacls to get write access to protected system files
+	exec.Command("takeown", "/f", filePath).Run()
+	exec.Command("icacls", filePath, "/grant", "Administrators:F").Run()
 }
 
 // setLoginScreenViaGroupPolicy sets the login screen using Group Policy registry keys.
