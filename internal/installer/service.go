@@ -3,7 +3,9 @@ package installer
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"golang.org/x/sys/windows/svc"
@@ -293,4 +295,187 @@ func copyFile(src, dst string) error {
 // GetInstalledExePath returns the path to the installed executable
 func GetInstalledExePath() string {
 	return filepath.Join(GetInstallDir(), "bgStatusService.exe")
+}
+
+// Scheduled Task constants and functions
+
+const (
+	// ScheduledTaskNameLock is the task that runs on lock/logoff
+	ScheduledTaskNameLock = "BgStatusServiceLock"
+	// ScheduledTaskNameBoot is the task that runs at boot with LogonUI restart
+	ScheduledTaskNameBoot = "BgStatusServiceBoot"
+)
+
+// ScheduledTaskExists checks if either scheduled task is installed
+func ScheduledTaskExists() bool {
+	cmd := exec.Command("schtasks", "/query", "/tn", ScheduledTaskNameBoot)
+	if err := cmd.Run(); err == nil {
+		return true
+	}
+	cmd = exec.Command("schtasks", "/query", "/tn", ScheduledTaskNameLock)
+	if err := cmd.Run(); err == nil {
+		return true
+	}
+	return false
+}
+
+// InstallScheduledTasks creates the boot and lock scheduled tasks
+func InstallScheduledTasks(exePath string) error {
+	// Create installation directory
+	installDir := GetInstallDir()
+	if err := os.MkdirAll(installDir, 0755); err != nil {
+		return fmt.Errorf("failed to create install directory: %w", err)
+	}
+
+	// Copy executable to installation directory
+	destPath := filepath.Join(installDir, "bgStatusService.exe")
+	if err := copyFile(exePath, destPath); err != nil {
+		return fmt.Errorf("failed to copy executable: %w", err)
+	}
+
+	// Create data directory
+	dataDir := GetDataDir()
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		return fmt.Errorf("failed to create data directory: %w", err)
+	}
+
+	// Delete existing tasks
+	DeleteScheduledTasks()
+
+	// Create boot task XML (runs at boot with --boot flag to restart LogonUI)
+	bootTaskXML := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Updates login screen at boot - restarts LogonUI to show fresh system info</Description>
+    <URI>\%s</URI>
+  </RegistrationInfo>
+  <Principals>
+    <Principal id="Author">
+      <UserId>S-1-5-18</UserId>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <Enabled>true</Enabled>
+    <ExecutionTimeLimit>PT5M</ExecutionTimeLimit>
+    <Priority>1</Priority>
+  </Settings>
+  <Triggers>
+    <BootTrigger>
+      <Enabled>true</Enabled>
+    </BootTrigger>
+  </Triggers>
+  <Actions Context="Author">
+    <Exec>
+      <Command>"%s"</Command>
+      <Arguments>--boot</Arguments>
+    </Exec>
+  </Actions>
+</Task>`, ScheduledTaskNameBoot, destPath)
+
+	// Create lock task XML (runs on lock/logoff without restarting LogonUI)
+	lockTaskXML := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Updates login screen on lock/logoff for next viewing</Description>
+    <URI>\%s</URI>
+  </RegistrationInfo>
+  <Principals>
+    <Principal id="Author">
+      <UserId>S-1-5-18</UserId>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <Enabled>true</Enabled>
+    <ExecutionTimeLimit>PT10M</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Triggers>
+    <SessionStateChangeTrigger>
+      <Enabled>true</Enabled>
+      <StateChange>SessionLock</StateChange>
+    </SessionStateChangeTrigger>
+    <SessionStateChangeTrigger>
+      <Enabled>true</Enabled>
+      <StateChange>ConsoleDisconnect</StateChange>
+    </SessionStateChangeTrigger>
+  </Triggers>
+  <Actions Context="Author">
+    <Exec>
+      <Command>"%s"</Command>
+    </Exec>
+  </Actions>
+</Task>`, ScheduledTaskNameLock, destPath)
+
+	// Write and import boot task
+	tempDir := os.TempDir()
+	bootXMLPath := filepath.Join(tempDir, "bgstatus_boot.xml")
+	if err := os.WriteFile(bootXMLPath, []byte(bootTaskXML), 0644); err != nil {
+		return fmt.Errorf("failed to write boot task XML: %w", err)
+	}
+	defer os.Remove(bootXMLPath)
+
+	cmd := exec.Command("schtasks", "/create", "/tn", ScheduledTaskNameBoot, "/xml", bootXMLPath, "/f")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to create boot task: %w - %s", err, string(output))
+	}
+
+	// Write and import lock task
+	lockXMLPath := filepath.Join(tempDir, "bgstatus_lock.xml")
+	if err := os.WriteFile(lockXMLPath, []byte(lockTaskXML), 0644); err != nil {
+		return fmt.Errorf("failed to write lock task XML: %w", err)
+	}
+	defer os.Remove(lockXMLPath)
+
+	cmd = exec.Command("schtasks", "/create", "/tn", ScheduledTaskNameLock, "/xml", lockXMLPath, "/f")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to create lock task: %w - %s", err, string(output))
+	}
+
+	// Register event log source
+	_ = eventlog.InstallAsEventCreate(ServiceName, eventlog.Error|eventlog.Warning|eventlog.Info)
+
+	return nil
+}
+
+// DeleteScheduledTasks removes both scheduled tasks
+func DeleteScheduledTasks() {
+	exec.Command("schtasks", "/delete", "/tn", ScheduledTaskNameBoot, "/f").Run()
+	exec.Command("schtasks", "/delete", "/tn", ScheduledTaskNameLock, "/f").Run()
+}
+
+// RunScheduledTask runs the boot task to generate the initial image
+func RunScheduledTask() error {
+	cmd := exec.Command("schtasks", "/run", "/tn", ScheduledTaskNameBoot)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to run task: %w - %s", err, string(output))
+	}
+	return nil
+}
+
+// RunExecutableDirectly runs the service executable directly
+func RunExecutableDirectly() error {
+	exePath := GetInstalledExePath()
+	cmd := exec.Command(exePath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// Check if it's just a "not found" type error vs actual failure
+		outStr := string(output)
+		if strings.Contains(outStr, "Error") {
+			return fmt.Errorf("executable failed: %w - %s", err, outStr)
+		}
+	}
+	return nil
 }

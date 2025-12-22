@@ -99,7 +99,6 @@ func runInstall() {
 
 	// Run installation in a goroutine so we can update the UI
 	go func() {
-		var installError error
 		var version string
 
 		// Step 1: Check existing installation
@@ -107,37 +106,29 @@ func runInstall() {
 		pw.SetProgress(5)
 		processMessagesWithDelay(pw, 300)
 
-		exists, err := installer.ServiceExists()
-		if err != nil {
-			installError = err
-			pw.SetComplete(false, "Error: Failed to check service status")
-			return
+		// Check for old Windows service
+		serviceExists, _ := installer.ServiceExists()
+		if serviceExists {
+			pw.SetStatus("Removing old Windows service...")
+			pw.SetProgress(10)
+			processMessagesWithDelay(pw, 200)
+			_ = installer.StopService()
+			_ = installer.DeleteService()
 		}
 
-		// Step 2: Stop and remove existing service if it exists
-		if exists {
-			pw.SetStatus("Stopping existing service...")
+		// Check for existing scheduled tasks
+		if installer.ScheduledTaskExists() {
+			pw.SetStatus("Removing existing scheduled tasks...")
 			pw.SetProgress(15)
 			processMessagesWithDelay(pw, 200)
-
-			_ = installer.StopService() // Ignore errors, service might not be running
-
-			pw.SetStatus("Removing old service...")
-			pw.SetProgress(25)
-			processMessagesWithDelay(pw, 200)
-
-			if err := installer.DeleteService(); err != nil {
-				installError = err
-				pw.SetComplete(false, "Error: Failed to remove existing service")
-				return
-			}
-		} else {
-			pw.SetProgress(25)
+			installer.DeleteScheduledTasks()
 		}
 
-		// Step 3: Download latest version with progress
+		pw.SetProgress(20)
+
+		// Step 2: Download latest version with progress
 		pw.SetStatus("Connecting to GitHub...")
-		pw.SetProgress(35)
+		pw.SetProgress(25)
 		pw.ProcessMessages()
 
 		exePath, ver, err := installer.DownloadLatestServiceWithProgress(func(status string, percent int) {
@@ -146,54 +137,50 @@ func runInstall() {
 			pw.ProcessMessages()
 		})
 		if err != nil {
-			installError = err
 			pw.SetComplete(false, "Error: Failed to download - "+err.Error())
 			return
 		}
 		version = ver
 		defer os.Remove(exePath) // Clean up temp file
 
-		// Step 4: Install service
-		pw.SetStatus("Installing service...")
+		// Step 3: Install scheduled tasks
+		pw.SetStatus("Installing scheduled tasks...")
 		pw.SetProgress(70)
 		processMessagesWithDelay(pw, 200)
 
-		err = installer.InstallService(exePath)
+		err = installer.InstallScheduledTasks(exePath)
 		if err != nil {
-			installError = err
-			pw.SetComplete(false, "Error: Failed to install service")
+			pw.SetComplete(false, "Error: Failed to install scheduled tasks - "+err.Error())
 			return
 		}
 
-		// Step 5: Start service (creates the image)
-		pw.SetStatus("Starting service...")
+		// Step 4: Run the executable to generate initial image
+		pw.SetStatus("Generating login screen image...")
 		pw.SetProgress(85)
 		processMessagesWithDelay(pw, 200)
 
-		err = installer.StartService()
+		err = installer.RunExecutableDirectly()
 		if err != nil {
-			// Service installed but failed to start - still mark as success
-			pw.SetComplete(true, "Installed "+version+" (service will start at next boot)")
+			// Task installed but initial run failed - still mark as success
+			pw.SetComplete(true, "Installed "+version+" (login screen will update on next boot)")
 			return
 		}
 
-		// Step 6: Wait for image to be created and apply it as user
+		// Step 5: Apply lock screen for current user
 		pw.SetStatus("Applying lock screen...")
 		pw.SetProgress(95)
-		processMessagesWithDelay(pw, 500) // Give service time to create image
+		processMessagesWithDelay(pw, 500)
 
 		// Find the latest loginscreen image and apply it via WinRT (runs as current user)
 		applyErr := applyLockScreenAsUser()
 		if applyErr != nil {
-			// Service worked but WinRT failed - still success, will work on reboot
-			pw.SetComplete(true, "Installed "+version+"! Lock screen will update on next sign-in.")
+			// Task worked but WinRT failed - still success, will work on reboot
+			pw.SetComplete(true, "Installed "+version+"! Login screen will update on next boot.")
 			return
 		}
 
 		// Complete!
-		if installError == nil {
-			pw.SetComplete(true, "Successfully installed "+version+"! Press Win+L to see your new login screen.")
-		}
+		pw.SetComplete(true, "Successfully installed "+version+"! Press Win+L to see your new login screen.")
 	}()
 
 	// Run message loop
@@ -202,14 +189,11 @@ func runInstall() {
 
 // runUninstall handles the uninstallation flow with a progress window
 func runUninstall() {
-	// Check if service is installed first
-	exists, err := installer.ServiceExists()
-	if err != nil {
-		installer.ShowError("Error", "Failed to check service status")
-		return
-	}
+	// Check if anything is installed (tasks or old service)
+	serviceExists, _ := installer.ServiceExists()
+	taskExists := installer.ScheduledTaskExists()
 
-	if !exists {
+	if !serviceExists && !taskExists {
 		installer.ShowInfo("Not Installed", "BgStatusService is not currently installed.")
 		return
 	}
@@ -219,24 +203,27 @@ func runUninstall() {
 
 	// Run uninstallation in a goroutine
 	go func() {
-		// Step 1: Stop service
-		pw.SetStatus("Stopping service...")
+		// Step 1: Remove scheduled tasks
+		pw.SetStatus("Removing scheduled tasks...")
 		pw.SetProgress(15)
 		processMessagesWithDelay(pw, 300)
 
-		_ = installer.StopService() // Ignore errors
+		installer.DeleteScheduledTasks()
 
-		// Step 2: Remove service
-		pw.SetStatus("Removing service...")
-		pw.SetProgress(35)
-		processMessagesWithDelay(pw, 300)
+		// Step 2: Remove old Windows service if present
+		if serviceExists {
+			pw.SetStatus("Removing old Windows service...")
+			pw.SetProgress(25)
+			processMessagesWithDelay(pw, 300)
 
-		if err := installer.DeleteService(); err != nil {
-			pw.SetComplete(false, "Error: Failed to remove service")
-			return
+			_ = installer.StopService()
+			_ = installer.DeleteService()
 		}
 
 		// Step 3: Remove event log source
+		pw.SetStatus("Cleaning up...")
+		pw.SetProgress(40)
+		processMessagesWithDelay(pw, 200)
 		installer.RemoveEventLogSource()
 
 		// Step 4: Remove files
@@ -244,18 +231,18 @@ func runUninstall() {
 		pw.SetProgress(55)
 		processMessagesWithDelay(pw, 300)
 
-		_ = installer.RemoveInstallation() // Ignore errors
+		_ = installer.RemoveInstallation()
 
 		// Step 5: Remove data directory
 		pw.SetStatus("Removing data directory...")
-		pw.SetProgress(65)
+		pw.SetProgress(70)
 		processMessagesWithDelay(pw, 200)
 
-		_ = installer.RemoveDataDirectory() // Ignore errors
+		_ = installer.RemoveDataDirectory()
 
 		// Step 6: Clean registry (restore original background)
 		pw.SetStatus("Restoring original login screen...")
-		pw.SetProgress(80)
+		pw.SetProgress(85)
 		processMessagesWithDelay(pw, 200)
 
 		restoreOriginalBackground()

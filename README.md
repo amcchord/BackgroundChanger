@@ -8,7 +8,7 @@ A Windows toolkit for customizing your desktop, lock screen, and login screen ba
 A command-line tool that sets your desktop wallpaper, lock screen, and login screen background — all at once.
 
 ### bgStatusService.exe
-A Windows service that displays system information (neofetch-style) on your login screen, so you can identify machines without logging in.
+A scheduled task that displays system information (neofetch-style) on your login screen, so you can identify machines without logging in. Perfect for IT environments and VM deployments.
 
 ### bgStatusServiceSetup.exe
 A GUI installer that downloads and installs the latest bgStatusService from GitHub. No scripts required — just double-click to install or uninstall.
@@ -61,13 +61,13 @@ bgchanger https://example.com/image.png
 
 ## bgStatusService
 
-A Windows service that overlays system information on your login screen background. Perfect for IT environments where you need to identify machines at a glance.
+A scheduled task that overlays system information on your login screen background. Perfect for IT environments where you need to identify machines at a glance — especially useful for VM deployments where machine identity changes.
 
 ### Information Displayed
 
 **Right Panel (System Info):**
 - Computer name / Hostname
-- Windows version
+- Windows version (correctly shows Windows 10 vs 11, with version like "24H2")
 - CPU model and core count
 - RAM amount
 - GPU model
@@ -85,13 +85,22 @@ A Windows service that overlays system information on your login screen backgrou
 
 ### Features
 
-- **Runs at boot** — Updates the login screen before any user logs in
+- **Runs at boot** — Updates the login screen with fresh system info before first login
+- **LogonUI refresh** — On boot, gracefully restarts the login screen to ensure updates are visible immediately
+- **Lock screen updates** — Also updates when you lock your screen or log off (without forcing a restart)
 - **Smart text color** — Automatically chooses white or black text based on background brightness
 - **Resolution-aware scaling** — Detects your display resolution and scales text appropriately (readable from 1024x768, compact on 4K+)
 - **Dual panel layout** — Services status on the left, system info on the right
 - **Windows Server support** — Automatically detects Server editions and monitors server-specific services
 - **Preserves your wallpaper** — Backs up the original image and applies overlay on top
-- **Integrates with bgchanger** — When you change wallpaper with bgchanger, the service uses the new image
+- **Integrates with bgchanger** — When you change wallpaper with bgchanger, the task uses the new image
+- **VM-ready** — Designed for scenarios where a machine is cloned or virtualized and needs to display its new identity
+
+### How It Works
+
+The service installs two scheduled tasks:
+1. **BgStatusServiceBoot** — Runs at system startup with high priority. Generates fresh system info overlay and restarts LogonUI to ensure the login screen shows current information.
+2. **BgStatusServiceLock** — Runs when you lock your screen or log off. Updates the image for the next time the login screen is shown (no LogonUI restart needed).
 
 ### Installation (Recommended: GUI Installer)
 
@@ -101,7 +110,7 @@ A Windows service that overlays system information on your login screen backgrou
 
 3. Choose "Install" and follow the prompts
 
-4. The service will run automatically on next boot, or start it immediately when prompted
+4. The tasks will run automatically on next boot, or test immediately by pressing Win+L
 
 ### Installation (PowerShell Scripts)
 
@@ -180,8 +189,8 @@ BackgroundChanger/
 │   ├── loginscreen/      # Login screen management
 │   └── installer/        # Installer dialogs and service management
 ├── install/
-│   ├── install.ps1       # Service installer (PowerShell)
-│   └── uninstall.ps1     # Service uninstaller (PowerShell)
+│   ├── install.ps1       # Task installer (PowerShell)
+│   └── uninstall.ps1     # Task uninstaller (PowerShell)
 └── assets/
     └── fonts/            # Embedded fonts
 ```

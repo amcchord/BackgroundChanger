@@ -7,6 +7,7 @@ import (
 	"image"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -160,8 +161,68 @@ func runStatusUpdate(elog debug.Log) error {
 		return fmt.Errorf("failed to set login screen: %v", err)
 	}
 
+	// Step 7: Force restart LogonUI to display the new image (only at boot)
+	// This is necessary because LogonUI caches the background image at startup
+	// We only do this at boot (--boot flag) to avoid disrupting lock screen
+	if isBootMode {
+		elog.Info(1, "Boot mode: Restarting LogonUI to display new image...")
+		restartLogonUICleanly(elog)
+	} else {
+		elog.Info(1, "Lock/manual mode: Skipping LogonUI restart")
+	}
+
 	elog.Info(1, "Login screen updated successfully!")
 	return nil
+}
+
+// restartLogonUICleanly kills LogonUI and sends Escape to dismiss any password prompt
+func restartLogonUICleanly(elog debug.Log) {
+	// Check if LogonUI is running (it won't be if a user is logged in without lock screen)
+	checkCmd := exec.Command("tasklist", "/fi", "imagename eq LogonUI.exe", "/fo", "csv", "/nh")
+	output, _ := checkCmd.Output()
+	if !strings.Contains(string(output), "LogonUI.exe") {
+		elog.Info(1, "LogonUI not running (user may be logged in) - skipping restart")
+		return
+	}
+
+	// Kill LogonUI - Windows will automatically restart it
+	elog.Info(1, "Killing LogonUI.exe...")
+	killCmd := exec.Command("taskkill", "/f", "/im", "LogonUI.exe")
+	killCmd.Run()
+
+	// Wait for Windows to restart LogonUI
+	elog.Info(1, "Waiting for LogonUI to restart...")
+	time.Sleep(2 * time.Second)
+
+	// Send Escape key to dismiss password box and show clean lock screen
+	// Using PowerShell with low-level keybd_event API to work on secure desktop
+	elog.Info(1, "Sending Escape to dismiss password prompt...")
+	psScript := `
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class KeySender {
+    [DllImport("user32.dll")]
+    public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+    public const byte VK_ESCAPE = 0x1B;
+    public const uint KEYEVENTF_KEYUP = 0x0002;
+    public static void SendEscape() {
+        keybd_event(VK_ESCAPE, 0, 0, UIntPtr.Zero);
+        System.Threading.Thread.Sleep(100);
+        keybd_event(VK_ESCAPE, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+    }
+}
+"@
+[KeySender]::SendEscape()
+Start-Sleep -Milliseconds 500
+[KeySender]::SendEscape()
+`
+	escCmd := exec.Command("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psScript)
+	if err := escCmd.Run(); err != nil {
+		elog.Warning(1, fmt.Sprintf("Failed to send Escape key: %v", err))
+	} else {
+		elog.Info(1, "Escape key sent successfully")
+	}
 }
 
 // runInteractive runs the service logic without the Windows service wrapper.
@@ -225,7 +286,18 @@ func cleanupOldLoginScreenImages(dir, currentFile string) {
 	}
 }
 
+// isBootMode checks if --boot flag was passed (used to trigger LogonUI restart)
+var isBootMode bool
+
 func main() {
+	// Check for --boot flag
+	for _, arg := range os.Args[1:] {
+		if arg == "--boot" {
+			isBootMode = true
+			break
+		}
+	}
+
 	// Check if we're running as a service
 	isService, err := svc.IsWindowsService()
 	if err != nil {
@@ -233,7 +305,7 @@ func main() {
 	}
 
 	if !isService {
-		// Running interactively (for testing)
+		// Running interactively (scheduled task or manual)
 		runInteractive()
 		return
 	}

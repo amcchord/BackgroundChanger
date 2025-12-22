@@ -14,6 +14,7 @@ import (
 	"github.com/shirou/gopsutil/v3/host"
 	"github.com/shirou/gopsutil/v3/mem"
 	"github.com/yusufpapurcu/wmi"
+	"golang.org/x/sys/windows/registry"
 )
 
 // SystemInfo contains all gathered system information.
@@ -173,40 +174,69 @@ func (s *SystemInfo) FormatLines() []string {
 }
 
 func getOSInfo() string {
+	// Use WMI to get the accurate OS caption (e.g., "Microsoft Windows 11 Pro")
+	var osInfo []Win32_OperatingSystem
+	err := wmi.Query("SELECT Caption FROM Win32_OperatingSystem", &osInfo)
+	if err == nil && len(osInfo) > 0 {
+		caption := osInfo[0].Caption
+		// Clean up the caption - remove "Microsoft " prefix for brevity
+		caption = strings.TrimPrefix(caption, "Microsoft ")
+
+		// Try to get the display version (e.g., "24H2") from registry
+		displayVersion := getWindowsDisplayVersion()
+		if displayVersion != "" {
+			return fmt.Sprintf("%s %s", caption, displayVersion)
+		}
+		return caption
+	}
+
+	// Fallback to gopsutil if WMI fails
 	hostInfo, err := host.Info()
 	if err != nil {
 		return "Windows"
 	}
 
-	// Format: "Windows 11 Pro 23H2" or similar
-	platform := hostInfo.Platform
 	version := hostInfo.PlatformVersion
-
-	// Try to get a cleaner Windows version
 	osName := "Windows"
-	if strings.Contains(platform, "Microsoft Windows") {
-		osName = platform
-	} else if platform != "" {
-		osName = platform
-	}
 
-	// Add version if available
+	// Determine Windows 10 vs 11 based on build number
+	// Windows 11 starts at build 22000
 	if version != "" {
-		// Extract major version info
-		if strings.Contains(version, "10.0.22") {
-			osName = "Windows 11"
-		} else if strings.Contains(version, "10.0") {
-			osName = "Windows 10"
-		}
-
-		// Try to append build number
 		parts := strings.Split(version, ".")
 		if len(parts) >= 3 {
-			osName = fmt.Sprintf("%s (Build %s)", osName, parts[2])
+			buildNum := parts[2]
+			// Convert to int for comparison
+			var build int
+			fmt.Sscanf(buildNum, "%d", &build)
+
+			if build >= 22000 {
+				osName = "Windows 11"
+			} else {
+				osName = "Windows 10"
+			}
+			osName = fmt.Sprintf("%s (Build %s)", osName, buildNum)
 		}
 	}
 
 	return osName
+}
+
+// getWindowsDisplayVersion gets the display version (e.g., "24H2") from registry
+func getWindowsDisplayVersion() string {
+	key, err := registry.OpenKey(registry.LOCAL_MACHINE,
+		`SOFTWARE\Microsoft\Windows NT\CurrentVersion`,
+		registry.QUERY_VALUE)
+	if err != nil {
+		return ""
+	}
+	defer key.Close()
+
+	displayVersion, _, err := key.GetStringValue("DisplayVersion")
+	if err != nil {
+		return ""
+	}
+
+	return displayVersion
 }
 
 func getCPUInfo() string {
