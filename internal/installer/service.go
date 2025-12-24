@@ -1,6 +1,7 @@
 package installer
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +12,14 @@ import (
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/eventlog"
 	"golang.org/x/sys/windows/svc/mgr"
+)
+
+// Command execution timeout constants
+const (
+	// CommandTimeout is the default timeout for external commands
+	CommandTimeout = 30 * time.Second
+	// ServiceManagerTimeout is the timeout for service manager operations
+	ServiceManagerTimeout = 15 * time.Second
 )
 
 const (
@@ -42,9 +51,30 @@ func GetDataDir() string {
 	return filepath.Join(programData, "BgStatusService")
 }
 
+// connectToServiceManager connects to the Windows Service Control Manager with timeout
+func connectToServiceManager() (*mgr.Mgr, error) {
+	type result struct {
+		mgr *mgr.Mgr
+		err error
+	}
+
+	done := make(chan result, 1)
+	go func() {
+		m, err := mgr.Connect()
+		done <- result{mgr: m, err: err}
+	}()
+
+	select {
+	case r := <-done:
+		return r.mgr, r.err
+	case <-time.After(ServiceManagerTimeout):
+		return nil, fmt.Errorf("timed out connecting to service manager after %v", ServiceManagerTimeout)
+	}
+}
+
 // ServiceExists checks if the service is already installed
 func ServiceExists() (bool, error) {
-	m, err := mgr.Connect()
+	m, err := connectToServiceManager()
 	if err != nil {
 		return false, fmt.Errorf("failed to connect to service manager: %w", err)
 	}
@@ -61,7 +91,7 @@ func ServiceExists() (bool, error) {
 
 // IsServiceRunning checks if the service is currently running
 func IsServiceRunning() (bool, error) {
-	m, err := mgr.Connect()
+	m, err := connectToServiceManager()
 	if err != nil {
 		return false, fmt.Errorf("failed to connect to service manager: %w", err)
 	}
@@ -83,7 +113,7 @@ func IsServiceRunning() (bool, error) {
 
 // StopService stops the service if it's running
 func StopService() error {
-	m, err := mgr.Connect()
+	m, err := connectToServiceManager()
 	if err != nil {
 		return fmt.Errorf("failed to connect to service manager: %w", err)
 	}
@@ -129,7 +159,7 @@ func StopService() error {
 
 // DeleteService removes the Windows service
 func DeleteService() error {
-	m, err := mgr.Connect()
+	m, err := connectToServiceManager()
 	if err != nil {
 		return fmt.Errorf("failed to connect to service manager: %w", err)
 	}
@@ -154,7 +184,7 @@ func DeleteService() error {
 
 // InstallService installs the Windows service
 func InstallService(exePath string) error {
-	m, err := mgr.Connect()
+	m, err := connectToServiceManager()
 	if err != nil {
 		return fmt.Errorf("failed to connect to service manager: %w", err)
 	}
@@ -207,7 +237,7 @@ func InstallService(exePath string) error {
 
 // StartService starts the Windows service
 func StartService() error {
-	m, err := mgr.Connect()
+	m, err := connectToServiceManager()
 	if err != nil {
 		return fmt.Errorf("failed to connect to service manager: %w", err)
 	}
@@ -297,6 +327,22 @@ func GetInstalledExePath() string {
 	return filepath.Join(GetInstallDir(), "bgStatusService.exe")
 }
 
+// runCommandWithTimeout runs a command with a timeout
+func runCommandWithTimeout(ctx context.Context, name string, args ...string) ([]byte, error) {
+	if ctx == nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), CommandTimeout)
+		defer cancel()
+	}
+
+	cmd := exec.CommandContext(ctx, name, args...)
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return output, fmt.Errorf("command timed out after %v", CommandTimeout)
+	}
+	return output, err
+}
+
 // Scheduled Task constants and functions
 
 const (
@@ -308,12 +354,15 @@ const (
 
 // ScheduledTaskExists checks if either scheduled task is installed
 func ScheduledTaskExists() bool {
-	cmd := exec.Command("schtasks", "/query", "/tn", ScheduledTaskNameBoot)
-	if err := cmd.Run(); err == nil {
+	ctx, cancel := context.WithTimeout(context.Background(), CommandTimeout)
+	defer cancel()
+
+	_, err := runCommandWithTimeout(ctx, "schtasks", "/query", "/tn", ScheduledTaskNameBoot)
+	if err == nil {
 		return true
 	}
-	cmd = exec.Command("schtasks", "/query", "/tn", ScheduledTaskNameLock)
-	if err := cmd.Run(); err == nil {
+	_, err = runCommandWithTimeout(ctx, "schtasks", "/query", "/tn", ScheduledTaskNameLock)
+	if err == nil {
 		return true
 	}
 	return false
@@ -426,8 +475,11 @@ func InstallScheduledTasks(exePath string) error {
 	}
 	defer os.Remove(bootXMLPath)
 
-	cmd := exec.Command("schtasks", "/create", "/tn", ScheduledTaskNameBoot, "/xml", bootXMLPath, "/f")
-	if output, err := cmd.CombinedOutput(); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), CommandTimeout)
+	defer cancel()
+
+	output, err := runCommandWithTimeout(ctx, "schtasks", "/create", "/tn", ScheduledTaskNameBoot, "/xml", bootXMLPath, "/f")
+	if err != nil {
 		return fmt.Errorf("failed to create boot task: %w - %s", err, string(output))
 	}
 
@@ -438,8 +490,8 @@ func InstallScheduledTasks(exePath string) error {
 	}
 	defer os.Remove(lockXMLPath)
 
-	cmd = exec.Command("schtasks", "/create", "/tn", ScheduledTaskNameLock, "/xml", lockXMLPath, "/f")
-	if output, err := cmd.CombinedOutput(); err != nil {
+	output, err = runCommandWithTimeout(ctx, "schtasks", "/create", "/tn", ScheduledTaskNameLock, "/xml", lockXMLPath, "/f")
+	if err != nil {
 		return fmt.Errorf("failed to create lock task: %w - %s", err, string(output))
 	}
 
@@ -451,14 +503,19 @@ func InstallScheduledTasks(exePath string) error {
 
 // DeleteScheduledTasks removes both scheduled tasks
 func DeleteScheduledTasks() {
-	exec.Command("schtasks", "/delete", "/tn", ScheduledTaskNameBoot, "/f").Run()
-	exec.Command("schtasks", "/delete", "/tn", ScheduledTaskNameLock, "/f").Run()
+	ctx, cancel := context.WithTimeout(context.Background(), CommandTimeout)
+	defer cancel()
+
+	runCommandWithTimeout(ctx, "schtasks", "/delete", "/tn", ScheduledTaskNameBoot, "/f")
+	runCommandWithTimeout(ctx, "schtasks", "/delete", "/tn", ScheduledTaskNameLock, "/f")
 }
 
 // RunScheduledTask runs the boot task to generate the initial image
 func RunScheduledTask() error {
-	cmd := exec.Command("schtasks", "/run", "/tn", ScheduledTaskNameBoot)
-	output, err := cmd.CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), CommandTimeout)
+	defer cancel()
+
+	output, err := runCommandWithTimeout(ctx, "schtasks", "/run", "/tn", ScheduledTaskNameBoot)
 	if err != nil {
 		return fmt.Errorf("failed to run task: %w - %s", err, string(output))
 	}
@@ -468,13 +525,21 @@ func RunScheduledTask() error {
 // RunExecutableDirectly runs the service executable directly
 func RunExecutableDirectly() error {
 	exePath := GetInstalledExePath()
-	cmd := exec.Command(exePath)
-	output, err := cmd.CombinedOutput()
+	
+	// Use a longer timeout for the actual executable (it may need to generate images)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	output, err := runCommandWithTimeout(ctx, exePath)
 	if err != nil {
 		// Check if it's just a "not found" type error vs actual failure
 		outStr := string(output)
 		if strings.Contains(outStr, "Error") {
 			return fmt.Errorf("executable failed: %w - %s", err, outStr)
+		}
+		// Timeout error
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("executable timed out after 2 minutes")
 		}
 	}
 	return nil

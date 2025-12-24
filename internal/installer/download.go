@@ -1,6 +1,7 @@
 package installer
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +10,16 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+)
+
+// Default timeouts for network operations
+const (
+	// HTTPConnectTimeout is the timeout for establishing a connection
+	HTTPConnectTimeout = 30 * time.Second
+	// HTTPRequestTimeout is the overall timeout for a request (including download)
+	HTTPRequestTimeout = 5 * time.Minute
+	// HTTPAPITimeout is the timeout for API calls (short responses)
+	HTTPAPITimeout = 30 * time.Second
 )
 
 const (
@@ -35,7 +46,19 @@ type GitHubAsset struct {
 
 // GetLatestRelease fetches information about the latest release from GitHub
 func GetLatestRelease() (*GitHubRelease, error) {
-	req, err := http.NewRequest("GET", GitHubAPIURL, nil)
+	return GetLatestReleaseWithContext(context.Background())
+}
+
+// GetLatestReleaseWithContext fetches release info with context for cancellation/timeout
+func GetLatestReleaseWithContext(ctx context.Context) (*GitHubRelease, error) {
+	// Use a timeout context if none provided
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, HTTPAPITimeout)
+		defer cancel()
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", GitHubAPIURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -43,13 +66,27 @@ func GetLatestRelease() (*GitHubRelease, error) {
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 	req.Header.Set("User-Agent", "BgStatusService-Installer")
 
-	client := &http.Client{}
+	client := &http.Client{
+		Timeout: HTTPAPITimeout,
+	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch release info: %w", err)
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("connection timed out after %v - check your internet connection", HTTPAPITimeout)
+		}
+		if ctx.Err() == context.Canceled {
+			return nil, fmt.Errorf("operation cancelled")
+		}
+		return nil, fmt.Errorf("failed to connect to GitHub: %w (check your internet connection)", err)
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("no releases found on GitHub repository")
+	}
+	if resp.StatusCode == http.StatusForbidden {
+		return nil, fmt.Errorf("GitHub rate limit exceeded - please try again later")
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
 	}
@@ -77,6 +114,18 @@ type DownloadProgress func(downloaded, total int64)
 
 // DownloadFile downloads a file from a URL to a local path
 func DownloadFile(url, destPath string, progress DownloadProgress) error {
+	return DownloadFileWithContext(context.Background(), url, destPath, progress)
+}
+
+// DownloadFileWithContext downloads a file with context for cancellation/timeout
+func DownloadFileWithContext(ctx context.Context, url, destPath string, progress DownloadProgress) error {
+	// Use a timeout context if none provided
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, HTTPRequestTimeout)
+		defer cancel()
+	}
+
 	// Create the destination directory if needed
 	destDir := filepath.Dir(destPath)
 	if err := os.MkdirAll(destDir, 0755); err != nil {
@@ -97,16 +146,25 @@ func DownloadFile(url, destPath string, progress DownloadProgress) error {
 		}
 	}()
 
-	// Download the file
-	req, err := http.NewRequest("GET", url, nil)
+	// Download the file with context
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("User-Agent", "BgStatusService-Installer")
 
-	client := &http.Client{}
+	// Use client with connection timeout (overall timeout handled by context)
+	client := &http.Client{
+		Timeout: HTTPRequestTimeout,
+	}
 	resp, err := client.Do(req)
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("download timed out - check your internet connection")
+		}
+		if ctx.Err() == context.Canceled {
+			return fmt.Errorf("download cancelled")
+		}
 		return fmt.Errorf("failed to download: %w", err)
 	}
 	defer resp.Body.Close()
@@ -128,6 +186,12 @@ func DownloadFile(url, destPath string, progress DownloadProgress) error {
 	// Copy the data
 	_, err = io.Copy(out, reader)
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("download timed out - check your internet connection")
+		}
+		if ctx.Err() == context.Canceled {
+			return fmt.Errorf("download cancelled")
+		}
 		return fmt.Errorf("failed to save file: %w", err)
 	}
 
@@ -193,11 +257,25 @@ type DownloadStatusCallback func(status string, progressPercent int)
 // DownloadLatestServiceWithProgress downloads the latest version with progress updates
 func DownloadLatestServiceWithProgress(statusCallback DownloadStatusCallback) (filePath string, version string, err error) {
 	// Get latest release info
-	statusCallback("Fetching release info from GitHub...", 30)
+	statusCallback("Connecting to GitHub...\nFetching release information", 30)
 	
 	release, err := GetLatestRelease()
 	if err != nil {
-		return "", "", fmt.Errorf("failed to get release info: %w", err)
+		// Provide more helpful error messages
+		errStr := err.Error()
+		if strings.Contains(errStr, "timeout") || strings.Contains(errStr, "timed out") {
+			return "", "", fmt.Errorf("connection timed out\n\nPlease check your internet connection and try again")
+		}
+		if strings.Contains(errStr, "no such host") || strings.Contains(errStr, "DNS") {
+			return "", "", fmt.Errorf("cannot resolve github.com\n\nPlease check your DNS settings and internet connection")
+		}
+		if strings.Contains(errStr, "connection refused") {
+			return "", "", fmt.Errorf("connection refused\n\nA firewall may be blocking access to GitHub")
+		}
+		if strings.Contains(errStr, "rate limit") {
+			return "", "", fmt.Errorf("GitHub rate limit exceeded\n\nPlease wait a few minutes and try again")
+		}
+		return "", "", fmt.Errorf("failed to get release info:\n%w", err)
 	}
 
 	// Find the service executable asset
@@ -263,9 +341,18 @@ func DownloadLatestServiceWithProgress(statusCallback DownloadStatusCallback) (f
 	
 	err = DownloadFile(asset.BrowserDownloadURL, destPath, progressCallback)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to download: %w", err)
+		// Provide more helpful error messages
+		errStr := err.Error()
+		if strings.Contains(errStr, "timeout") || strings.Contains(errStr, "timed out") {
+			return "", "", fmt.Errorf("download timed out\n\nThe connection was too slow or interrupted.\nPlease try again")
+		}
+		if strings.Contains(errStr, "cancelled") {
+			return "", "", fmt.Errorf("download was cancelled")
+		}
+		return "", "", fmt.Errorf("download failed:\n%w", err)
 	}
 
+	statusCallback("Download complete, verifying...", 65)
 	return destPath, release.TagName, nil
 }
 

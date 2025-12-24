@@ -1,16 +1,19 @@
 // Package main implements a GUI installer for BgStatusService.
-// It downloads the latest version from GitHub and installs/uninstalls it as a Windows service.
+// The service executable is embedded in this installer for offline installation.
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
+	"runtime/debug"
 	"syscall"
 	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 
+	"github.com/backgroundchanger/cmd/installer/embed"
 	"github.com/backgroundchanger/internal/installer"
 )
 
@@ -99,15 +102,43 @@ func runInstall() {
 
 	// Run installation in a goroutine so we can update the UI
 	go func() {
-		var version string
+		// Recover from any panics and display error
+		defer func() {
+			if r := recover(); r != nil {
+				stackTrace := string(debug.Stack())
+				errMsg := fmt.Sprintf("Unexpected error: %v\n\nPlease report this issue.", r)
+				// Log stack trace to temp file for debugging
+				logCrash(r, stackTrace)
+				pw.SetComplete(false, errMsg)
+			}
+		}()
+
+		// Give the UI a moment to fully initialize
+		time.Sleep(100 * time.Millisecond)
+		pw.ProcessMessages()
 
 		// Step 1: Check existing installation
 		pw.SetStatus("Checking existing installation...")
 		pw.SetProgress(5)
 		processMessagesWithDelay(pw, 300)
 
-		// Check for old Windows service
-		serviceExists, _ := installer.ServiceExists()
+		// Check for old Windows service (with timeout protection)
+		serviceExists := false
+		serviceCheckDone := make(chan bool, 1)
+		go func() {
+			exists, _ := installer.ServiceExists()
+			serviceExists = exists
+			serviceCheckDone <- true
+		}()
+		
+		select {
+		case <-serviceCheckDone:
+			// Success
+		case <-time.After(15 * time.Second):
+			pw.SetStatus("Warning: Service check timed out, continuing...")
+			pw.ProcessMessages()
+		}
+
 		if serviceExists {
 			pw.SetStatus("Removing old Windows service...")
 			pw.SetProgress(10)
@@ -117,7 +148,26 @@ func runInstall() {
 		}
 
 		// Check for existing scheduled tasks
-		if installer.ScheduledTaskExists() {
+		pw.SetStatus("Checking for existing scheduled tasks...")
+		pw.SetProgress(12)
+		pw.ProcessMessages()
+
+		taskCheckDone := make(chan bool, 1)
+		taskExists := false
+		go func() {
+			taskExists = installer.ScheduledTaskExists()
+			taskCheckDone <- true
+		}()
+
+		select {
+		case <-taskCheckDone:
+			// Success
+		case <-time.After(15 * time.Second):
+			pw.SetStatus("Warning: Task check timed out, continuing...")
+			pw.ProcessMessages()
+		}
+
+		if taskExists {
 			pw.SetStatus("Removing existing scheduled tasks...")
 			pw.SetProgress(15)
 			processMessagesWithDelay(pw, 200)
@@ -126,22 +176,21 @@ func runInstall() {
 
 		pw.SetProgress(20)
 
-		// Step 2: Download latest version with progress
-		pw.SetStatus("Connecting to GitHub...")
+		// Step 2: Extract embedded service executable
+		pw.SetStatus("Extracting service executable...")
 		pw.SetProgress(25)
 		pw.ProcessMessages()
 
-		exePath, ver, err := installer.DownloadLatestServiceWithProgress(func(status string, percent int) {
-			pw.SetStatus(status)
-			pw.SetProgress(percent)
-			pw.ProcessMessages()
-		})
+		exePath, err := embed.ExtractServiceExe()
 		if err != nil {
-			pw.SetComplete(false, "Error: Failed to download - "+err.Error())
+			pw.SetComplete(false, "Failed to extract service:\n"+err.Error())
 			return
 		}
-		version = ver
+		version := embed.Version
 		defer os.Remove(exePath) // Clean up temp file
+
+		pw.SetProgress(40)
+		processMessagesWithDelay(pw, 100)
 
 		// Step 3: Install scheduled tasks
 		pw.SetStatus("Installing scheduled tasks...")
@@ -150,7 +199,7 @@ func runInstall() {
 
 		err = installer.InstallScheduledTasks(exePath)
 		if err != nil {
-			pw.SetComplete(false, "Error: Failed to install scheduled tasks - "+err.Error())
+			pw.SetComplete(false, "Failed to install scheduled tasks:\n"+err.Error())
 			return
 		}
 
@@ -187,11 +236,34 @@ func runInstall() {
 	pw.RunMessageLoop()
 }
 
+// logCrash writes crash information to a temp file for debugging
+func logCrash(err interface{}, stackTrace string) {
+	tempDir := os.TempDir()
+	logPath := tempDir + "\\bgstatus_crash.log"
+	logContent := fmt.Sprintf("Time: %s\nError: %v\n\nStack Trace:\n%s", 
+		time.Now().Format(time.RFC3339), err, stackTrace)
+	os.WriteFile(logPath, []byte(logContent), 0644)
+}
+
 // runUninstall handles the uninstallation flow with a progress window
 func runUninstall() {
-	// Check if anything is installed (tasks or old service)
-	serviceExists, _ := installer.ServiceExists()
-	taskExists := installer.ScheduledTaskExists()
+	// Check if anything is installed (tasks or old service) with timeout
+	serviceExists := false
+	taskExists := false
+
+	checkDone := make(chan bool, 1)
+	go func() {
+		serviceExists, _ = installer.ServiceExists()
+		taskExists = installer.ScheduledTaskExists()
+		checkDone <- true
+	}()
+
+	select {
+	case <-checkDone:
+		// Success
+	case <-time.After(15 * time.Second):
+		// Timeout - proceed with uninstall attempt anyway
+	}
 
 	if !serviceExists && !taskExists {
 		installer.ShowInfo("Not Installed", "BgStatusService is not currently installed.")
@@ -203,6 +275,20 @@ func runUninstall() {
 
 	// Run uninstallation in a goroutine
 	go func() {
+		// Recover from any panics and display error
+		defer func() {
+			if r := recover(); r != nil {
+				stackTrace := string(debug.Stack())
+				errMsg := fmt.Sprintf("Unexpected error: %v\n\nPlease report this issue.", r)
+				logCrash(r, stackTrace)
+				pw.SetComplete(false, errMsg)
+			}
+		}()
+
+		// Give the UI a moment to fully initialize
+		time.Sleep(100 * time.Millisecond)
+		pw.ProcessMessages()
+
 		// Step 1: Remove scheduled tasks
 		pw.SetStatus("Removing scheduled tasks...")
 		pw.SetProgress(15)

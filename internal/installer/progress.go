@@ -262,10 +262,10 @@ func NewProgressWindow(title string) *ProgressWindow {
 	dpi := getDPI()
 	
 	// Window dimensions (scaled for DPI)
-	windowWidth := scale(500, dpi)
-	windowHeight := scale(200, dpi)
+	windowWidth := scale(520, dpi)
+	windowHeight := scale(220, dpi) // Taller to accommodate error messages
 	padding := scale(20, dpi)
-	statusHeight := scale(45, dpi) // Taller for multi-line status
+	statusHeight := scale(60, dpi) // Taller for multi-line status and error messages
 	progressHeight := scale(22, dpi)
 	buttonWidth := scale(100, dpi)
 	buttonHeight := scale(30, dpi)
@@ -372,6 +372,13 @@ func (pw *ProgressWindow) SetStatus(status string) {
 
 // SetComplete marks the operation as complete and enables the close button
 func (pw *ProgressWindow) SetComplete(success bool, message string) {
+	// For errors, ensure message isn't too long for the window
+	if !success {
+		// Truncate very long messages
+		if len(message) > 500 {
+			message = message[:497] + "..."
+		}
+	}
 	pw.SetProgress(100)
 	pw.SetStatus(message)
 	procPostMessageW.Call(uintptr(pw.hwnd), WM_SET_COMPLETE, 0, 0)
