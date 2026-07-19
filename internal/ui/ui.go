@@ -61,6 +61,10 @@ func Main() error {
 	installed := setup.IsInstalled()
 	legacyInstalled := setup.IsLegacyInstalled()
 	state, detail := installationSummary(installed, legacyInstalled)
+	platformNote := "Native policy support: Windows Enterprise, Education, IoT Enterprise, and Server."
+	if sysinfo.IsProfessionalEdition(sysinfo.CurrentEdition()) {
+		platformNote = "Windows Pro: compatibility turns off tips, advertising ID, and consumer experiences."
+	}
 
 	err = (MainWindow{
 		AssignTo: &window,
@@ -101,6 +105,7 @@ func Main() error {
 				Text: "One automatic LocalSystem service renders at boot, after session changes, and every five minutes. The Generated at timestamp is always visible.",
 				Font: Font{Family: "Segoe UI", PointSize: 9},
 			},
+			Label{Text: platformNote, Font: Font{Family: "Segoe UI", PointSize: 8}},
 			VSpacer{},
 			Composite{
 				Layout: HBox{Spacing: 10},
@@ -111,7 +116,7 @@ func Main() error {
 					PushButton{AssignTo: &closeButton, Text: "Close", OnClicked: func() { window.Close() }},
 				},
 			},
-			Label{Text: fmt.Sprintf("W:ID  •  Version %s  •  Windows Enterprise, Education, IoT Enterprise, or Server", buildinfo.Version), Font: Font{Family: "Segoe UI", PointSize: 8}},
+			Label{Text: fmt.Sprintf("W:ID  •  Version %s", buildinfo.Version), Font: Font{Family: "Segoe UI", PointSize: 8}},
 		},
 	}).Create()
 	if err != nil {
@@ -339,9 +344,9 @@ func installationSummary(installed, legacyInstalled bool) (string, string) {
 	}
 	age := time.Since(status.CompletedAt).Round(time.Second)
 	if !status.EditionSupported {
-		return "Installed — Windows edition unsupported", fmt.Sprintf("The service refreshed %s ago on %s, but Windows Pro/Home ignores this policy without broader device-management settings.", age, status.Snapshot.Hostname)
+		return "Installed — policy unverified", fmt.Sprintf("The saved status from %s does not confirm an effective lock-screen policy. Run Repair / Upgrade.", status.CompletedAt.Format(time.RFC3339))
 	}
-	return "Installed and active", fmt.Sprintf("Last refreshed %s ago on %s. Supported Windows edition.", age, status.Snapshot.Hostname)
+	return "Installed — policy verified", fmt.Sprintf("Last refreshed %s ago on %s. Windows confirmed the managed lock-screen image.", age, status.Snapshot.Hostname)
 }
 
 func installText(installed bool) string {

@@ -30,6 +30,9 @@ func TestLoadOrCreateRoundTrip(t *testing.T) {
 	if !strings.Contains(string(b), "Wallpaper Identity (W:ID)") {
 		t.Fatalf("generated config lacks W:ID branding:\n%s", b)
 	}
+	if !got.EnableProCompatibility || !strings.Contains(string(b), "enable_pro_compatibility: true") {
+		t.Fatalf("generated config does not enable documented Windows Pro compatibility:\n%s", b)
+	}
 	got.Preset = PresetCustom
 	got.RefreshMinutes = 17
 	got.Show.GPU = false
@@ -45,12 +48,29 @@ func TestLoadOrCreateRoundTrip(t *testing.T) {
 	}
 }
 
+func TestExistingConfigGetsSafeProCompatibilityDefault(t *testing.T) {
+	cfg, err := decode([]byte("preset: balanced\nrefresh_minutes: 5\n"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.EnableProCompatibility {
+		t.Fatal("config without the v4.0.1 field should enable Pro compatibility")
+	}
+	cfg, err = decode([]byte("preset: balanced\nrefresh_minutes: 5\nenable_pro_compatibility: false\n"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.EnableProCompatibility {
+		t.Fatal("explicit Pro compatibility opt-out was ignored")
+	}
+}
+
 func TestRepositoryExampleIsValid(t *testing.T) {
 	cfg, err := Load(filepath.Join("..", "..", "config.example.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Preset != PresetCustom || !cfg.Show.OS || cfg.Show.FailedAutoServices {
+	if cfg.Preset != PresetCustom || !cfg.EnableProCompatibility || !cfg.Show.OS || cfg.Show.FailedAutoServices {
 		t.Fatalf("unexpected example config: %#v", cfg)
 	}
 }

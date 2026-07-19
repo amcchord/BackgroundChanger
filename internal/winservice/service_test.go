@@ -1,6 +1,22 @@
 package winservice
 
-import "testing"
+import (
+	"sync"
+	"testing"
+	"time"
+)
+
+func TestWaitForWorkerIsBounded(t *testing.T) {
+	var group sync.WaitGroup
+	group.Add(1)
+	if waitForWorker(&group, 10*time.Millisecond) {
+		t.Fatal("busy worker unexpectedly drained")
+	}
+	group.Done()
+	if !waitForWorker(&group, time.Second) {
+		t.Fatal("completed worker did not drain")
+	}
+}
 
 func TestEnqueueRefreshReplacesQueuedEventForCLI(t *testing.T) {
 	trigger := make(chan serviceJob, 1)

@@ -4,6 +4,9 @@
 # Hostname and the timezone-qualified Generated at timestamp are always shown.
 preset: custom
 refresh_minutes: 5
+# Required on Windows Pro. This enables Microsoft's SetEduPolicies compatibility
+# switch, which disables Windows tips, advertising ID, and consumer experiences.
+enable_pro_compatibility: true
 base_image: ""
 width: 0
 height: 0

@@ -6,11 +6,11 @@
 
 <p align="center"><strong>W:ID</strong> — machine identity and health, visible before sign-in.</p>
 
-Wallpaper Identity renders live, fastfetch-style machine information into the Windows lock and sign-in background before anyone logs in. It is designed for labs, equipment rooms, VM fleets, classrooms, and other places where visually identical computers are difficult to tell apart.
+Wallpaper Identity renders fastfetch-style machine information and applies it as the managed Windows lock and sign-in background. Its automatic LocalSystem service starts during boot and needs no user session, making it useful in labs, equipment rooms, VM fleets, classrooms, and other places where visually identical computers are difficult to tell apart.
 
 ![A current W:ID Balanced machine-identity background](assets/screenshots/prelogin.png)
 
-This is a real service-generated background from the Windows 11 Pro validation guest. Pro retained its stock lock screen, as documented below; supported Enterprise-class editions use this image for the lock and sign-in background.
+This is a real service-generated background from the Windows 11 validation guest. W:ID uses the same renderer at service start, after boot settles, on session and power events, and on its configured interval.
 
 ## What it shows
 
@@ -48,20 +48,22 @@ Version 4 detects the previous service automatically. **Repair / Upgrade** prese
 | Windows 10/11 Enterprise or Education | Supported |
 | Windows 10/11 IoT Enterprise | Supported |
 | Windows Server | Supported through Group Policy |
-| Windows Pro | Not supported by default; tested Pro systems accept the writes but ignore the image |
+| Windows 10/11 Pro | Supported through the default `SetEduPolicies` compatibility switch |
 | Windows Home | Not supported |
 
-This boundary comes from Windows policy support, not an installer check. Microsoft documents that the Personalization CSP works on Pro only when the device is already configured with SharedPC `SetEduPolicies` or `BootToCloudPCEnhanced`. W:ID does not silently enable either broader device-management mode. It reports the detected edition in its status file and UI instead of claiming that the background is active. See Microsoft's [lock-screen configuration matrix](https://learn.microsoft.com/windows/configuration/background/), [Personalization CSP requirements](https://learn.microsoft.com/windows/client-management/mdm/personalization-csp), and [Shared PC policy effects](https://learn.microsoft.com/windows/configuration/shared-pc/shared-pc-technical).
+Microsoft documents that the Personalization CSP works on Pro when SharedPC `SetEduPolicies` is enabled. W:ID enables that one compatibility switch by default on Pro; it does **not** enable Shared PC mode, account cleanup, power policies, kiosk mode, or storage restrictions. The switch disables Windows tips, advertising ID, and Microsoft consumer experiences. Its previous state is backed up and restored during uninstall, and power users can opt out with `enable_pro_compatibility: false` (in which case Pro will report an unhealthy policy instead of a false success). See Microsoft's [Personalization CSP requirements](https://learn.microsoft.com/windows/client-management/mdm/personalization-csp), [`SetEduPolicies` effects](https://learn.microsoft.com/windows/configuration/shared-pc/shared-pc-technical), and [`MDM_SharedPC` class](https://learn.microsoft.com/windows/win32/dmwmibridgeprov/mdm-sharedpc).
 
-## Why W:ID refreshes before sign-in
+## How refresh works
 
 1. The Service Control Manager starts `WallpaperIdentity` as LocalSystem during boot, before interactive logon.
-2. The service gathers current machine state and renders a new, versioned JPEG in `C:\ProgramData\Wallpaper Identity\backgrounds`.
-3. It applies Microsoft's machine lock-screen Group Policy and, where available, the LocalSystem-only `MDM_Personalization` WMI bridge.
+2. The service gathers current machine state and renders a new, versioned JPEG in `C:\ProgramData\Wallpaper Identity\backgrounds`, then stages the CSP copy in the space-free `C:\ProgramData\WallpaperIdentityCSP` path required by Windows Pro.
+3. It applies Microsoft's machine lock-screen Group Policy and LocalSystem-only `MDM_Personalization` WMI bridge. On Pro, it first enables only `SetEduPolicies`.
 4. It refreshes after boot settles, every five minutes, and on logon, logoff, lock, and power events.
 5. If the lock screen is already visible, it restarts only `LockApp.exe`. It never terminates the security-sensitive `LogonUI.exe` process.
 
-Rotating the image filename on every render prevents Windows from reusing a stale cached image. Microsoft documents that [auto-start services run during system boot](https://learn.microsoft.com/windows/win32/services/automatically-starting-services) and that the [`MDM_Personalization` class](https://learn.microsoft.com/windows/win32/dmwmibridgeprov/mdm-personalization) is available in the LocalSystem partition.
+Each render uses a new filename to give Windows an unambiguous policy target. A refresh is successful only after W:ID reads back its Group Policy values or Windows reports Personalization CSP status `1` for the exact generated file; Pro requires both verified `SetEduPolicies` and CSP readback. Microsoft documents that [auto-start services run during system boot](https://learn.microsoft.com/windows/win32/services/automatically-starting-services) and that the [`MDM_Personalization` class](https://learn.microsoft.com/windows/win32/dmwmibridgeprov/mdm-personalization) is available in the LocalSystem partition.
+
+**Windows freshness boundary:** W:ID can prove that boot generated a new file containing the current IP address and that Windows accepted its policy, but Windows owns the bitmap already cached by `LogonUI`. In a controlled Windows 11 Pro test, changing the VM network while it was powered off produced a new boot image with the new address and timestamp, while the first visible pre-login frame still showed the previous verified image. The permanent **Generated at** label makes that condition visible. W:ID does not delay boot, replace a credential provider, or terminate `LogonUI` to bypass this Windows cache.
 
 More detail is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -83,7 +85,7 @@ C:\ProgramData\Wallpaper Identity\backgrounds\
 | **Balanced** | Everyday machine status | Identity plus CPU/GPU, memory, disk, uptime, service count, restart state, critical services |
 | **Operations** | Troubleshooting and fleet health | Resources, service/restart state, and failed automatic services |
 
-`config.yml` exposes every field as a readable Boolean. Set `preset: custom` before changing individual `show` values; changing `preset` to a named value applies that complete preset. You can also tune `refresh_minutes`, use a local JPEG/PNG with `base_image`, or force both `width` and `height`. Hostname and **Generated at** cannot be hidden.
+`config.yml` exposes every field as a readable Boolean. Set `preset: custom` before changing individual `show` values; changing `preset` to a named value applies that complete preset. You can also tune `refresh_minutes`, control the documented Pro compatibility switch, use a local JPEG/PNG with `base_image`, or force both `width` and `height`. Hostname and **Generated at** cannot be hidden.
 
 Start from [config.example.yml](config.example.yml) and see [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the complete annotated reference. Display changes are read on the next refresh; restart the service after changing `refresh_minutes`.
 
@@ -103,16 +105,16 @@ Requirements: Windows and Go 1.24 or newer.
 
 ```powershell
 go test ./...
-powershell -ExecutionPolicy Bypass -File .\build.ps1 -Version v4.0.0
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -Version v4.0.1
 ```
 
 Release output is written to `dist\WallpaperIdentitySetup.exe`, `dist\WallpaperIdentityCLI.exe`, and `dist\SHA256SUMS.txt`. Both offline binaries contain the service, renderer, fonts, W:ID icon, and Windows manifest; Setup uses the graphical Windows subsystem while CLI uses the console subsystem for reliable RMM waiting, stdout, and exit codes.
 
-The validation matrix covers Windows 10 Enterprise 22H2, Windows 11 Enterprise 25H2, and Windows 11 Pro 25H2 in parallel 8 GiB VirtualBox guests. See [docs/TESTING.md](docs/TESTING.md) for reproducible evidence and the documented Pro limitation.
+The validation matrix covers Windows 10 Enterprise 22H2, Windows 11 Enterprise 25H2, and Windows 11 Pro 25H2 in parallel 8 GiB VirtualBox guests. See [docs/TESTING.md](docs/TESTING.md) for reproducible evidence.
 
 ## Uninstall behavior
 
-Uninstall stops and removes the service, unregisters W:ID, and restores any lock-screen/logon policy values that existed before installation. Configuration and generated images are kept by default for audit and recovery. Product-key exports and local VM media are ignored by git.
+Uninstall stops and removes the service, unregisters W:ID, and restores lock-screen/logon policy values plus the Pro compatibility state that existed before installation. Configuration and generated images are kept by default for audit and recovery. Product-key exports and local VM media are ignored by git.
 
 ## License
 

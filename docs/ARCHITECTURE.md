@@ -36,11 +36,13 @@ The old identifiers remain only as explicit compatibility constants and ownershi
 3. Render a new resolution-aware JPEG with the W:ID logo, a unique timestamp in its filename, and a non-configurable, timezone-qualified **Generated at** label.
 4. Set `HKLM\Software\Policies\Microsoft\Windows\Personalization\LockScreenImage` and the related no-change/no-overlay values.
 5. Enable `HKLM\Software\Policies\Microsoft\Windows\System\DisableAcrylicBackgroundOnLogon`, the registry mapping for Microsoft's **Show clear logon background** policy.
-6. Attempt the documented `MDM_Personalization` WMI bridge as a second application path. This class is explicitly partitioned for LocalSystem.
-7. If `LockApp.exe` is present, terminate only that presentation process so Windows recreates it using the new versioned path.
-8. Atomically write `status.json`, retain the newest four backgrounds, and append a diagnostic log entry.
+6. On Windows Pro, back up and enable only the `MDM_SharedPC.SetEduPolicies` compatibility switch required by Personalization CSP.
+7. Copy the JPEG to the space-free `C:\ProgramData\WallpaperIdentityCSP` delivery cache and apply the documented `MDM_Personalization` WMI bridge. This class is explicitly partitioned for LocalSystem.
+8. Read back the exact URL and wait for Personalization CSP status `1`; on Pro, both that proof and verified `SetEduPolicies` are mandatory.
+9. If `LockApp.exe` is present, terminate only that presentation process so Windows recreates it using the new versioned path.
+10. Atomically write `status.json`, retain the newest four backgrounds, and append a diagnostic log entry.
 
-The service performs a synchronous first render before reporting `Running`, a second render 20 seconds later so network/service state has settled, and subsequent renders on the configured timer and relevant service-control events.
+The service reports `Running` promptly, then performs its initial render on one serialized worker. This avoids exhausting the Service Control Manager start window when the CSP provider is slow. A second render follows 20 seconds later so network and service state can settle; timer, session, power, and RMM requests use that same worker. Stop and shutdown allow the worker up to 30 seconds to drain, then release Windows so policy-provider latency cannot indefinitely block shutdown.
 
 ## Safety choices
 
@@ -49,14 +51,14 @@ The service performs a synchronous first render before reporting `Running`, a se
 - The service has no listener, remote API, updater, or outbound network dependency.
 - Hostname and the generated timestamp cannot be disabled.
 - Existing policy values are backed up before the first install and restored only if the active image is still owned by W:ID or the migration source.
-- The app does not change Windows editions or enable Shared PC / education policies to work around Microsoft licensing boundaries.
+- On Pro, the app enables only `SetEduPolicies`; it never enables Shared PC mode, account management/cleanup, power policy, kiosk mode, or storage restrictions. The prior state is serialized and restored during uninstall.
 - Product-key exports used for local VM creation are ignored and never read into build artifacts or logs.
 
 ## Known platform boundary
 
-Microsoft supports the Group Policy lock-screen setting on Enterprise, Education, IoT Enterprise, and Server. Personalization CSP has separate edition and management requirements. Validation confirmed that an unmanaged Windows 11 Pro guest accepts both application paths but ignores the lock/sign-in background image. Windows Home is not supported.
+Microsoft supports the Group Policy lock-screen setting on Enterprise, Education, IoT Enterprise, and Server. Personalization CSP has separate edition requirements. Microsoft documents `SetEduPolicies` as a Pro compatibility path; W:ID enables that single setting by default and clearly surfaces its three user-policy effects: advertising ID, Windows tips, and Microsoft consumer experiences are disabled. Windows Home remains unsupported.
 
-Microsoft documents two Pro exceptions: SharedPC `SetEduPolicies` and `BootToCloudPCEnhanced`. `SetEduPolicies` marks the machine as an education environment and changes local policies for advertising ID, Windows tips, and Microsoft consumer experiences. That is outside W:ID's implied scope, so it is never enabled automatically.
+Successful collection and policy verification do not prove which bitmap an already-running `LogonUI` instance is displaying. Windows can retain the previous verified lock-screen bitmap for its first pre-login frame after boot, even when W:ID's new boot-generated file contains a changed IP address and Personalization CSP reports status `1` for it. W:ID exposes the age through the mandatory generated timestamp and deliberately avoids unsupported credential-provider replacement, `LogonUI` termination, or boot-delay hooks.
 
 Primary references:
 
@@ -64,6 +66,7 @@ Primary references:
 - [ADMX Control Panel Display policy mapping](https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-controlpaneldisplay)
 - [Personalization CSP](https://learn.microsoft.com/windows/client-management/mdm/personalization-csp)
 - [Shared PC technical reference](https://learn.microsoft.com/windows/configuration/shared-pc/shared-pc-technical)
+- [`MDM_SharedPC` WMI class](https://learn.microsoft.com/windows/win32/dmwmibridgeprov/mdm-sharedpc)
 - [`MDM_Personalization` WMI class](https://learn.microsoft.com/windows/win32/dmwmibridgeprov/mdm-personalization)
 - [Show clear logon background policy](https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-logon#disableacrylicbackgroundonlogon)
 - [Automatically starting Windows services](https://learn.microsoft.com/windows/win32/services/automatically-starting-services)

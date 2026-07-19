@@ -57,7 +57,7 @@ Example result:
   "reboot_required": false,
   "success": true,
   "exit_code": 0,
-  "version": "v4.0.0",
+  "version": "v4.0.1",
   "commit": "abc1234",
   "installed": true,
   "legacy_installed": false,
@@ -85,7 +85,7 @@ version [--json] [--result-file PATH]
 help
 ```
 
-`status` verifies that the service is running, the last render succeeded, and its timestamp is no older than twice `refresh_minutes` plus one minute. It reports the previous service as `legacy_installed` before an upgrade. `refresh` sends a dedicated service control and waits up to 90 seconds for a newer `reason: "cli"` status record produced by LocalSystem. `render` creates a preview only and never changes Windows policy.
+`status` verifies that the service is running, the last render succeeded, Windows confirmed an edition-appropriate policy path, and the timestamp is no older than twice `refresh_minutes` plus one minute. A registry write alone is not treated as success on Pro: status requires verified `SetEduPolicies` plus Personalization CSP status `1` for the exact generated file. This proves the managed file and policy state, not which bitmap an already-running `LogonUI` surface currently displays; Windows can retain its previous cached bitmap. `status` reports the previous service as `legacy_installed` before an upgrade. `refresh` sends a dedicated service control and waits up to 90 seconds for a newer `reason: "cli"` status record produced by LocalSystem. `render` creates a preview only and never changes Windows policy.
 
 The previous `--install`, `--uninstall`, `--render`, `--refresh`, `--status`, and `--version` command aliases remain valid. Windows-style `/install`, `/uninstall`, `/quiet`, `/silent`, `/headless`, `/no-ui`, `/json`, `/result-file`, `/preset`, `/config`, `/output`, and `/remove-data` forms are also accepted. `/?` prints help.
 
