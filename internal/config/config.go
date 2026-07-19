@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,6 +95,32 @@ func (c Config) Validate() error {
 	if c.Width != 0 && (c.Width < 800 || c.Width > 7680 || c.Height < 600 || c.Height > 4320) {
 		return errors.New("custom dimensions must be between 800x600 and 7680x4320")
 	}
+	if c.BaseImage != "" && !filepath.IsAbs(c.BaseImage) {
+		return errors.New("base_image must be an absolute local path")
+	}
+	return nil
+}
+
+// ValidateAssets verifies external files referenced by a supplied deployment
+// configuration before setup changes any service, policy, or installation
+// state. Runtime Load intentionally remains tolerant of a temporarily missing
+// image so an existing installation can keep its last successful background.
+func ValidateAssets(c Config) error {
+	if c.BaseImage == "" {
+		return nil
+	}
+	file, err := os.Open(c.BaseImage)
+	if err != nil {
+		return fmt.Errorf("open base_image: %w", err)
+	}
+	defer file.Close()
+	_, format, err := image.DecodeConfig(file)
+	if err != nil {
+		return fmt.Errorf("decode base_image: %w", err)
+	}
+	if format != "jpeg" && format != "png" {
+		return fmt.Errorf("base_image must be a JPEG or PNG, got %s", format)
+	}
 	return nil
 }
 
@@ -160,7 +189,7 @@ func LoadOrCreate(path string) (Config, error) {
 	if !os.IsNotExist(err) {
 		return Config{}, err
 	}
-	// v3 release candidates used config.json. Import it once into the new YAML
+	// Early v3 release candidates used config.json. Import it once into YAML
 	// format so upgrades preserve refresh, image, and dimension settings.
 	legacyPath := filepath.Join(filepath.Dir(path), "config.json")
 	if b, readErr := os.ReadFile(legacyPath); readErr == nil {
@@ -191,7 +220,7 @@ func Save(path string, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	header := []byte("# BackgroundChanger power-user configuration.\n# Hostname and the Generated at timestamp are always shown.\n# Set preset to custom after changing individual show values.\n")
+	header := []byte("# Wallpaper Identity (W:ID) power-user configuration.\n# Hostname and the Generated at timestamp are always shown.\n# Set preset to custom after changing individual show values.\n")
 	b = append(header, b...)
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, b, 0o644); err != nil {

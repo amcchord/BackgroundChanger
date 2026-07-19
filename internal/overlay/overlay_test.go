@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/amcchord/BackgroundChanger/internal/config"
-	"github.com/amcchord/BackgroundChanger/internal/sysinfo"
+	"github.com/amcchord/WallpaperIdentity/v4/internal/config"
+	"github.com/amcchord/WallpaperIdentity/v4/internal/sysinfo"
 )
 
 func TestRenderUsesRequestedDimensions(t *testing.T) {
@@ -59,5 +59,11 @@ func TestPresetRowsAndGeneratedAtInvariant(t *testing.T) {
 	}
 	if got := generatedAtLabel(snapshot); got != "Generated at 2026-07-18 20:01:02 EDT" {
 		t.Fatalf("generatedAtLabel = %q", got)
+	}
+}
+
+func TestOverlayBrandLabel(t *testing.T) {
+	if overlayBrandLabel != "W:ID  •  WALLPAPER IDENTITY" {
+		t.Fatalf("overlayBrandLabel = %q", overlayBrandLabel)
 	}
 }

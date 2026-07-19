@@ -1,0 +1,23 @@
+# Wallpaper Identity (W:ID) power-user configuration.
+# Copy this file, edit it, and deploy with:
+# WallpaperIdentityCLI.exe install --json --config C:\RMM\config.yml
+# Hostname and the timezone-qualified Generated at timestamp are always shown.
+preset: custom
+refresh_minutes: 5
+base_image: ""
+width: 0
+height: 0
+show:
+  os: true
+  build: true
+  cpu: true
+  gpu: true
+  memory: true
+  disk: true
+  ip: true
+  serial: true
+  uptime: true
+  services: true
+  restart: true
+  critical_services: true
+  failed_auto_services: false

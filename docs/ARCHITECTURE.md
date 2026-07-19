@@ -1,26 +1,39 @@
-# Architecture
+# Wallpaper Identity architecture
 
 ## Design goals
 
-BackgroundChanger must produce useful output before the first interactive sign-in, refresh without relying on a user's profile, avoid unsupported LogonUI manipulation, and remain easy to deploy to disconnected machines.
+Wallpaper Identity (W:ID) must produce useful output before the first interactive sign-in, refresh without relying on a user's profile, avoid unsupported LogonUI manipulation, and remain easy to deploy to disconnected machines.
 
 ## Process model
 
-One signed-or-hash-verifiable executable has three entry modes:
+Two hash-verifiable release artifacts share the same application, setup, service, renderer, and test code but use different Windows subsystems:
 
-| Mode | Entry point | Purpose |
+| Artifact / mode | Entry point | Purpose |
 |---|---|---|
-| Setup UI | no arguments | Install, repair/upgrade, and uninstall |
-| Windows service | `service` | Boot/session/timer refresh loop under LocalSystem |
-| Maintenance | `--refresh`, `--render`, `--install`, `--uninstall` | Automation and diagnostics |
+| Graphical Setup | `WallpaperIdentitySetup.exe` with no arguments | Install, migrate, repair/upgrade, and uninstall |
+| Console CLI | `WallpaperIdentityCLI.exe COMMAND` | Blocking, headless RMM deployment, health, refresh, render, and removal |
+| Windows service | installed runtime with `service` | Boot/session/timer refresh loop under LocalSystem |
 
-The installer copies itself to `C:\Program Files\BackgroundChanger\BackgroundChanger.exe` and registers that copy as an automatic service. Keeping setup and runtime in one binary eliminates network downloads, embedded executable drift, and installer/service version mismatches.
+Either installer artifact copies itself to `C:\Program Files\Wallpaper Identity\WallpaperIdentity.exe` and registers that copy as the automatic `WallpaperIdentity` service. The graphical build opens Setup by default; the console build prints help and runs headlessly unless the Apps & features registration supplies the explicit interactive maintenance flag. Keeping each artifact self-contained eliminates network downloads, embedded executable drift, and installer/service version mismatches.
+
+## Version 3 migration
+
+The v4 installer treats the previous product identity as an upgrade source, not a parallel installation:
+
+1. Detect and stop the previous service before moving data.
+2. Move or merge configuration, generated backgrounds, diagnostic status, logs, and policy/MDM rollback files into `C:\ProgramData\Wallpaper Identity`.
+3. Keep the tuned v3 configuration and original rollback files authoritative. If an interrupted attempt already created conflicting W:ID files, preserve those copies beside the migrated files with `.pre-v4` or `.from-v3` suffixes.
+4. Rewrite the YAML header with the Wallpaper Identity brand without changing power-user values.
+5. Remove the previous service, Apps & features key, and install directory before registering W:ID.
+6. Continue using the original policy backup, so a later uninstall restores the state that existed before either product version was installed.
+
+The old identifiers remain only as explicit compatibility constants and ownership checks; no user-facing screen, active service, executable, directory, or registry entry uses them after a successful upgrade.
 
 ## Refresh sequence
 
-1. Load or create `C:\ProgramData\BackgroundChanger\config.yml`, resolving the selected named preset or custom field visibility.
+1. Load or create `C:\ProgramData\Wallpaper Identity\config.yml`, resolving the selected named preset or custom field visibility.
 2. Gather machine facts from Windows registry, WMI, network interfaces, and system counters.
-3. Render a new resolution-aware JPEG with a unique timestamp in its filename and a non-configurable, timezone-qualified **Generated at** label in the image itself.
+3. Render a new resolution-aware JPEG with the W:ID logo, a unique timestamp in its filename, and a non-configurable, timezone-qualified **Generated at** label.
 4. Set `HKLM\Software\Policies\Microsoft\Windows\Personalization\LockScreenImage` and the related no-change/no-overlay values.
 5. Enable `HKLM\Software\Policies\Microsoft\Windows\System\DisableAcrylicBackgroundOnLogon`, the registry mapping for Microsoft's **Show clear logon background** policy.
 6. Attempt the documented `MDM_Personalization` WMI bridge as a second application path. This class is explicitly partitioned for LocalSystem.
@@ -34,16 +47,16 @@ The service performs a synchronous first render before reporting `Running`, a se
 - `LogonUI.exe` is never terminated or injected into.
 - No credential provider is installed and no credential data is inspected.
 - The service has no listener, remote API, updater, or outbound network dependency.
-- Hostname and the generated timestamp cannot be disabled, so every screen identifies both the machine and the age of its data.
-- Existing policy values are backed up before the first install and restored only if the active image still belongs to BackgroundChanger.
+- Hostname and the generated timestamp cannot be disabled.
+- Existing policy values are backed up before the first install and restored only if the active image is still owned by W:ID or the migration source.
 - The app does not change Windows editions or enable Shared PC / education policies to work around Microsoft licensing boundaries.
-- The product-key export used for local VM creation is ignored and never read into build artifacts or logs.
+- Product-key exports used for local VM creation are ignored and never read into build artifacts or logs.
 
 ## Known platform boundary
 
-Microsoft supports the Group Policy lock-screen setting on Enterprise, Education, IoT Enterprise, and Server. Personalization CSP has its own edition and management requirements. Validation confirmed that an unmanaged Windows 11 Pro guest accepts both application paths but ignores the lock/sign-in background image. Windows Home is not supported.
+Microsoft supports the Group Policy lock-screen setting on Enterprise, Education, IoT Enterprise, and Server. Personalization CSP has separate edition and management requirements. Validation confirmed that an unmanaged Windows 11 Pro guest accepts both application paths but ignores the lock/sign-in background image. Windows Home is not supported.
 
-Microsoft documents two Pro exceptions: SharedPC `SetEduPolicies` and `BootToCloudPCEnhanced`. `SetEduPolicies` marks the machine as an education environment and changes local policies for advertising ID, Windows tips, and Microsoft consumer experiences. That is outside a background utility's implied scope, so BackgroundChanger does not enable it automatically.
+Microsoft documents two Pro exceptions: SharedPC `SetEduPolicies` and `BootToCloudPCEnhanced`. `SetEduPolicies` marks the machine as an education environment and changes local policies for advertising ID, Windows tips, and Microsoft consumer experiences. That is outside W:ID's implied scope, so it is never enabled automatically.
 
 Primary references:
 

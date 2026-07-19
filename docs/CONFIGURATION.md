@@ -1,6 +1,8 @@
 # Power-user configuration
 
-BackgroundChanger creates `C:\ProgramData\BackgroundChanger\config.yml` during installation. The LocalSystem service reads display settings on every render, so most edits take effect at the next refresh. Restart the `BackgroundChanger` service after changing `refresh_minutes` because that value controls the service timer itself.
+Wallpaper Identity (W:ID) creates `C:\ProgramData\Wallpaper Identity\config.yml` during installation. The LocalSystem service reads display settings on every render, so most edits take effect at the next refresh. Restart the `WallpaperIdentity` service after changing `refresh_minutes` because that value controls the service timer itself.
+
+The repository includes a deployment-ready [config.example.yml](../config.example.yml). Copy it to your RMM content, rename it to `config.yml`, and adjust the custom field switches as needed.
 
 ## Presets
 
@@ -11,7 +13,7 @@ Set `preset: custom` to tune individual fields. Hostname and the timezone-qualif
 ## Complete example
 
 ```yaml
-# BackgroundChanger power-user configuration.
+# Wallpaper Identity (W:ID) power-user configuration.
 # Hostname and the Generated at timestamp are always shown.
 # Set preset to custom after changing individual show values.
 preset: custom
@@ -57,7 +59,15 @@ show:
 To apply display edits immediately from an elevated PowerShell window:
 
 ```powershell
-& 'C:\Program Files\BackgroundChanger\BackgroundChanger.exe' --refresh
+& 'C:\Program Files\Wallpaper Identity\WallpaperIdentity.exe' --refresh
 ```
 
-Invalid YAML or out-of-range values do not replace the last successful background. The error is recorded in `C:\ProgramData\BackgroundChanger\status.json` and `BackgroundChanger.log` for diagnosis.
+Invalid YAML or out-of-range values do not replace the last successful background. The error is recorded in `C:\ProgramData\Wallpaper Identity\status.json` and `WallpaperIdentity.log` for diagnosis.
+
+For RMM deployment, validate and import a prepared file atomically:
+
+```powershell
+& .\WallpaperIdentityCLI.exe install --json --config 'C:\RMM\wid-config.yml'
+```
+
+An explicit `--config` or `--preset` replaces the active configuration. Omitting both during `repair` or `upgrade` preserves the existing or migrated file. See [CLI.md](CLI.md) for the complete headless contract.

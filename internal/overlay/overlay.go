@@ -13,8 +13,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/amcchord/BackgroundChanger/internal/config"
-	"github.com/amcchord/BackgroundChanger/internal/sysinfo"
+	"github.com/amcchord/WallpaperIdentity/v4/internal/branding"
+	"github.com/amcchord/WallpaperIdentity/v4/internal/config"
+	"github.com/amcchord/WallpaperIdentity/v4/internal/sysinfo"
 	"github.com/fogleman/gg"
 	xdraw "golang.org/x/image/draw"
 )
@@ -27,6 +28,8 @@ var (
 	fontPath string
 	fontErr  error
 )
+
+const overlayBrandLabel = "W:ID  •  WALLPAPER IDENTITY"
 
 func Dimensions(cfg config.Config, snapshot sysinfo.Snapshot) (int, int) {
 	if cfg.Width != 0 && cfg.Height != 0 {
@@ -57,12 +60,16 @@ func Render(snapshot sysinfo.Snapshot, cfg config.Config) (image.Image, error) {
 	// The identity and two side panels reserve both Windows-owned clock regions:
 	// top-center on Windows 11 and lower-left on Windows 10. The center and
 	// bottom-left remain background-only so Windows can draw over them cleanly.
-	drawMark(dc, padding, padding, scale)
+	logo, err := branding.Logo()
+	if err != nil {
+		return nil, err
+	}
+	drawLogo(dc, logo, padding, padding-4*scale, 62*scale)
 	if err := setFont(dc, 18*scale); err != nil {
 		return nil, err
 	}
 	dc.SetColor(color.RGBA{137, 207, 240, 255})
-	dc.DrawString("PRE-LOGIN MACHINE STATUS", padding+70*scale, padding+19*scale)
+	dc.DrawString(overlayBrandLabel, padding+78*scale, padding+19*scale)
 	if err := setFont(dc, 58*scale); err != nil {
 		return nil, err
 	}
@@ -240,20 +247,12 @@ func drawHealth(dc *gg.Context, x, y, width, height, scale float64, precedingRow
 	}
 }
 
-func drawMark(dc *gg.Context, x, y, scale float64) {
-	size := 21 * scale
-	gap := 5 * scale
-	colors := []color.RGBA{
-		{74, 190, 245, 255}, {44, 145, 223, 255},
-		{50, 154, 225, 255}, {35, 111, 194, 255},
-	}
-	for row := 0; row < 2; row++ {
-		for col := 0; col < 2; col++ {
-			dc.SetColor(colors[row*2+col])
-			dc.DrawRoundedRectangle(x+float64(col)*(size+gap), y+float64(row)*(size+gap), size, size, 3*scale)
-			dc.Fill()
-		}
-	}
+func drawLogo(dc *gg.Context, logo image.Image, x, y, size float64) {
+	dc.Push()
+	dc.Translate(x, y)
+	dc.Scale(size/float64(logo.Bounds().Dx()), size/float64(logo.Bounds().Dy()))
+	dc.DrawImage(logo, 0, 0)
+	dc.Pop()
 }
 
 func background(path string, width, height int) (image.Image, error) {
@@ -303,7 +302,7 @@ func setFont(dc *gg.Context, size float64) error {
 			fontErr = err
 			return
 		}
-		dir := filepath.Join(os.TempDir(), "BackgroundChanger")
+		dir := filepath.Join(os.TempDir(), "WallpaperIdentity")
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			fontErr = err
 			return

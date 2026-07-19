@@ -7,12 +7,13 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/amcchord/BackgroundChanger/internal/buildinfo"
-	"github.com/amcchord/BackgroundChanger/internal/config"
-	"github.com/amcchord/BackgroundChanger/internal/overlay"
-	"github.com/amcchord/BackgroundChanger/internal/paths"
-	"github.com/amcchord/BackgroundChanger/internal/setup"
-	"github.com/amcchord/BackgroundChanger/internal/sysinfo"
+	"github.com/amcchord/WallpaperIdentity/v4/internal/branding"
+	"github.com/amcchord/WallpaperIdentity/v4/internal/buildinfo"
+	"github.com/amcchord/WallpaperIdentity/v4/internal/config"
+	"github.com/amcchord/WallpaperIdentity/v4/internal/overlay"
+	"github.com/amcchord/WallpaperIdentity/v4/internal/paths"
+	"github.com/amcchord/WallpaperIdentity/v4/internal/setup"
+	"github.com/amcchord/WallpaperIdentity/v4/internal/sysinfo"
 	"github.com/lxn/walk"
 	. "github.com/lxn/walk/declarative"
 	"github.com/lxn/win"
@@ -26,6 +27,20 @@ type presetChoice struct {
 }
 
 func Main() error {
+	logo, err := branding.Logo()
+	if err != nil {
+		return err
+	}
+	appIcon, err := walk.NewIconFromImage(logo)
+	if err != nil {
+		return fmt.Errorf("create W:ID application icon: %w", err)
+	}
+	defer appIcon.Dispose()
+	logoBitmap, err := walk.NewBitmapFromImage(logo)
+	if err != nil {
+		return fmt.Errorf("create W:ID logo bitmap: %w", err)
+	}
+	defer logoBitmap.Dispose()
 	previews, err := createPresetPreviews()
 	if err != nil {
 		return fmt.Errorf("create preset previews: %w", err)
@@ -40,20 +55,28 @@ func Main() error {
 
 	var window *walk.MainWindow
 	var stateLabel, detailLabel *walk.Label
-	var installButton, uninstallButton *walk.PushButton
+	var installButton, uninstallButton, closeButton *walk.PushButton
 	var presetBox *walk.ComboBox
+	working := false
 	installed := setup.IsInstalled()
-	state, detail := installationSummary(installed)
+	legacyInstalled := setup.IsLegacyInstalled()
+	state, detail := installationSummary(installed, legacyInstalled)
 
 	err = (MainWindow{
 		AssignTo: &window,
-		Title:    "BackgroundChanger Setup",
+		Title:    "Wallpaper Identity Setup",
+		Icon:     appIcon,
 		MinSize:  Size{Width: 810, Height: 555},
 		Size:     Size{Width: 840, Height: 575},
 		Layout:   VBox{Margins: Margins{Left: 20, Top: 16, Right: 20, Bottom: 14}, Spacing: 6},
 		Children: []Widget{
-			Label{Text: "BackgroundChanger", Font: Font{Family: "Segoe UI", PointSize: 23, Bold: true}},
-			Label{Text: "Machine identity and health, visible before sign-in", Font: Font{Family: "Segoe UI", PointSize: 11}},
+			Composite{Layout: HBox{Spacing: 12}, Children: []Widget{
+				ImageView{Image: logoBitmap, Mode: ImageViewModeShrink, MinSize: Size{Width: 64, Height: 64}, MaxSize: Size{Width: 64, Height: 64}},
+				Composite{Layout: VBox{Spacing: 1}, Children: []Widget{
+					Label{Text: "Wallpaper Identity", Font: Font{Family: "Segoe UI", PointSize: 23, Bold: true}},
+					Label{Text: "W:ID  •  Machine identity and health, visible before sign-in", Font: Font{Family: "Segoe UI", PointSize: 11}},
+				}},
+			}},
 			GroupBox{
 				Title:  "Current status",
 				Layout: VBox{Margins: Margins{Left: 14, Top: 10, Right: 14, Bottom: 10}, Spacing: 3},
@@ -83,17 +106,22 @@ func Main() error {
 				Layout: HBox{Spacing: 10},
 				Children: []Widget{
 					PushButton{AssignTo: &installButton, Text: installText(installed)},
-					PushButton{AssignTo: &uninstallButton, Text: "Uninstall", Enabled: installed},
+					PushButton{AssignTo: &uninstallButton, Text: "Uninstall", Enabled: installed && !legacyInstalled},
 					HSpacer{},
-					PushButton{Text: "Close", OnClicked: func() { window.Close() }},
+					PushButton{AssignTo: &closeButton, Text: "Close", OnClicked: func() { window.Close() }},
 				},
 			},
-			Label{Text: fmt.Sprintf("Version %s  •  Windows Enterprise, Education, IoT Enterprise, or Server", buildinfo.Version), Font: Font{Family: "Segoe UI", PointSize: 8}},
+			Label{Text: fmt.Sprintf("W:ID  •  Version %s  •  Windows Enterprise, Education, IoT Enterprise, or Server", buildinfo.Version), Font: Font{Family: "Segoe UI", PointSize: 8}},
 		},
 	}).Create()
 	if err != nil {
 		return err
 	}
+	window.Closing().Attach(func(canceled *bool, _ walk.CloseReason) {
+		if working {
+			*canceled = true
+		}
+	})
 	centerInWorkArea(window)
 
 	run := func(uninstall bool) {
@@ -114,7 +142,7 @@ func Main() error {
 		}
 		if !setup.IsAdministrator() {
 			if err := setup.RelaunchElevated(args...); err != nil {
-				walk.MsgBox(window, "BackgroundChanger Setup", "Administrator elevation failed:\n\n"+err.Error(), walk.MsgBoxIconError)
+				walk.MsgBox(window, "Wallpaper Identity Setup", "Administrator elevation failed:\n\n"+err.Error(), walk.MsgBoxIconError)
 				return
 			}
 			window.Close()
@@ -122,7 +150,9 @@ func Main() error {
 		}
 		installButton.SetEnabled(false)
 		uninstallButton.SetEnabled(false)
+		closeButton.SetEnabled(false)
 		presetBox.SetEnabled(false)
+		working = true
 		stateLabel.SetText("Working…")
 		detailLabel.SetText("Preparing the requested change.")
 		go func() {
@@ -136,17 +166,19 @@ func Main() error {
 				opErr = setup.InstallWithPreset(progress, preset)
 			}
 			window.Synchronize(func() {
+				working = false
 				installedNow := setup.IsInstalled()
 				installButton.SetText(installText(installedNow))
 				installButton.SetEnabled(true)
-				uninstallButton.SetEnabled(installedNow)
+				uninstallButton.SetEnabled(installedNow && !setup.IsLegacyInstalled())
+				closeButton.SetEnabled(true)
 				presetBox.SetEnabled(!installedNow)
 				if opErr != nil {
 					stateLabel.SetText("The operation could not be completed")
 					detailLabel.SetText(opErr.Error())
-					walk.MsgBox(window, "BackgroundChanger Setup", opErr.Error(), walk.MsgBoxIconError)
+					walk.MsgBox(window, "Wallpaper Identity Setup", opErr.Error(), walk.MsgBoxIconError)
 				} else {
-					newState, newDetail := installationSummary(installedNow)
+					newState, newDetail := installationSummary(installedNow, setup.IsLegacyInstalled())
 					stateLabel.SetText(newState)
 					detailLabel.SetText(newDetail)
 				}
@@ -155,7 +187,7 @@ func Main() error {
 	}
 	installButton.Clicked().Attach(func() { run(false) })
 	uninstallButton.Clicked().Attach(func() {
-		if walk.MsgBox(window, "Uninstall BackgroundChanger", "Remove the service and its Windows lock-screen policy?\n\nGenerated images and configuration will be kept in "+paths.DataDir()+".", walk.MsgBoxYesNo|walk.MsgBoxIconQuestion) == walk.DlgCmdYes {
+		if walk.MsgBox(window, "Uninstall Wallpaper Identity", "Remove the W:ID service and its Windows lock-screen policy?\n\nGenerated images and configuration will be kept in "+paths.DataDir()+".", walk.MsgBoxYesNo|walk.MsgBoxIconQuestion) == walk.DlgCmdYes {
 			run(true)
 		}
 	})
@@ -232,13 +264,23 @@ func disposePreviews(previews map[string]walk.Image) {
 }
 
 func RunOperation(title string, operation func(setup.ProgressFunc) error) error {
+	logo, err := branding.Logo()
+	if err != nil {
+		return err
+	}
+	appIcon, err := walk.NewIconFromImage(logo)
+	if err != nil {
+		return err
+	}
+	defer appIcon.Dispose()
 	var window *walk.MainWindow
 	var statusLabel *walk.Label
 	var progressBar *walk.ProgressBar
 	var closeButton *walk.PushButton
-	err := (MainWindow{
+	err = (MainWindow{
 		AssignTo: &window,
 		Title:    title,
+		Icon:     appIcon,
 		MinSize:  Size{Width: 570, Height: 260},
 		Size:     Size{Width: 570, Height: 260},
 		Layout:   VBox{Margins: Margins{Left: 30, Top: 28, Right: 30, Bottom: 24}, Spacing: 14},
@@ -253,6 +295,12 @@ func RunOperation(title string, operation func(setup.ProgressFunc) error) error 
 	if err != nil {
 		return err
 	}
+	working := true
+	window.Closing().Attach(func(canceled *bool, _ walk.CloseReason) {
+		if working {
+			*canceled = true
+		}
+	})
 	var result error
 	go func() {
 		result = operation(func(percent int, message string) {
@@ -262,6 +310,7 @@ func RunOperation(title string, operation func(setup.ProgressFunc) error) error 
 			})
 		})
 		window.Synchronize(func() {
+			working = false
 			closeButton.SetText("Close")
 			closeButton.SetEnabled(true)
 			if result != nil {
@@ -274,9 +323,12 @@ func RunOperation(title string, operation func(setup.ProgressFunc) error) error 
 	return result
 }
 
-func installationSummary(installed bool) (string, string) {
+func installationSummary(installed, legacyInstalled bool) (string, string) {
 	if !installed {
 		return "Not installed", "Choose a starting layout, then select Install."
+	}
+	if legacyInstalled {
+		return "Previous version detected", "Repair / Upgrade will migrate its service, configuration, generated images, and policy backups to Wallpaper Identity."
 	}
 	status, err := setup.ReadStatus()
 	if err != nil {

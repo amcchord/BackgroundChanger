@@ -10,12 +10,12 @@ import (
 	"sort"
 	"time"
 
-	"github.com/amcchord/BackgroundChanger/internal/buildinfo"
-	"github.com/amcchord/BackgroundChanger/internal/config"
-	"github.com/amcchord/BackgroundChanger/internal/loginscreen"
-	"github.com/amcchord/BackgroundChanger/internal/overlay"
-	"github.com/amcchord/BackgroundChanger/internal/paths"
-	"github.com/amcchord/BackgroundChanger/internal/sysinfo"
+	"github.com/amcchord/WallpaperIdentity/v4/internal/buildinfo"
+	"github.com/amcchord/WallpaperIdentity/v4/internal/config"
+	"github.com/amcchord/WallpaperIdentity/v4/internal/loginscreen"
+	"github.com/amcchord/WallpaperIdentity/v4/internal/overlay"
+	"github.com/amcchord/WallpaperIdentity/v4/internal/paths"
+	"github.com/amcchord/WallpaperIdentity/v4/internal/sysinfo"
 )
 
 type Status struct {
