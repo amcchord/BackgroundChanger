@@ -1,45 +1,81 @@
-// Package ui implements the small native Windows setup and maintenance window.
+// Package ui implements the native Windows setup and maintenance window.
 package ui
 
 import (
 	"fmt"
 	"os"
 	"time"
+	"unsafe"
 
 	"github.com/amcchord/BackgroundChanger/internal/buildinfo"
+	"github.com/amcchord/BackgroundChanger/internal/config"
+	"github.com/amcchord/BackgroundChanger/internal/overlay"
 	"github.com/amcchord/BackgroundChanger/internal/paths"
 	"github.com/amcchord/BackgroundChanger/internal/setup"
+	"github.com/amcchord/BackgroundChanger/internal/sysinfo"
 	"github.com/lxn/walk"
 	. "github.com/lxn/walk/declarative"
+	"github.com/lxn/win"
 )
 
+type presetChoice struct {
+	Name        string
+	Title       string
+	Description string
+	Preview     walk.Image
+}
+
 func Main() error {
+	previews, err := createPresetPreviews()
+	if err != nil {
+		return fmt.Errorf("create preset previews: %w", err)
+	}
+	defer disposePreviews(previews)
+	choices := []presetChoice{
+		{Name: config.PresetIdentity, Title: "Identity", Description: "OS, build, IP and serial", Preview: previews[config.PresetIdentity]},
+		{Name: config.PresetBalanced, Title: "Balanced", Description: "Hardware, capacity and health", Preview: previews[config.PresetBalanced]},
+		{Name: config.PresetOperations, Title: "Operations", Description: "Resources, restart and failures", Preview: previews[config.PresetOperations]},
+	}
+	presetLabels := []string{"Identity — find the machine", "Balanced — everyday status", "Operations — service health"}
+
 	var window *walk.MainWindow
 	var stateLabel, detailLabel *walk.Label
 	var installButton, uninstallButton *walk.PushButton
+	var presetBox *walk.ComboBox
 	installed := setup.IsInstalled()
 	state, detail := installationSummary(installed)
 
-	err := (MainWindow{
+	err = (MainWindow{
 		AssignTo: &window,
 		Title:    "BackgroundChanger Setup",
-		MinSize:  Size{Width: 650, Height: 440},
-		Size:     Size{Width: 650, Height: 440},
-		Layout:   VBox{Margins: Margins{Left: 34, Top: 30, Right: 34, Bottom: 26}, Spacing: 12},
+		MinSize:  Size{Width: 810, Height: 555},
+		Size:     Size{Width: 840, Height: 575},
+		Layout:   VBox{Margins: Margins{Left: 20, Top: 16, Right: 20, Bottom: 14}, Spacing: 6},
 		Children: []Widget{
 			Label{Text: "BackgroundChanger", Font: Font{Family: "Segoe UI", PointSize: 23, Bold: true}},
 			Label{Text: "Machine identity and health, visible before sign-in", Font: Font{Family: "Segoe UI", PointSize: 11}},
-			VSpacer{Size: 6},
 			GroupBox{
 				Title:  "Current status",
-				Layout: VBox{Margins: Margins{Left: 18, Top: 18, Right: 18, Bottom: 18}, Spacing: 8},
+				Layout: VBox{Margins: Margins{Left: 14, Top: 10, Right: 14, Bottom: 10}, Spacing: 3},
 				Children: []Widget{
-					Label{AssignTo: &stateLabel, Text: state, Font: Font{Family: "Segoe UI Semibold", PointSize: 13}},
+					Label{AssignTo: &stateLabel, Text: state, Font: Font{Family: "Segoe UI Semibold", PointSize: 12}},
 					Label{AssignTo: &detailLabel, Text: detail, Font: Font{Family: "Segoe UI", PointSize: 9}},
 				},
 			},
+			GroupBox{
+				Title:  "Choose a starting layout",
+				Layout: VBox{Margins: Margins{Left: 12, Top: 9, Right: 12, Bottom: 9}, Spacing: 6},
+				Children: []Widget{
+					Composite{Layout: HBox{Spacing: 12}, Children: presetPreviewWidgets(choices)},
+					Composite{Layout: HBox{Spacing: 8}, Children: []Widget{
+						Label{Text: "Install preset:", Font: Font{Family: "Segoe UI Semibold", PointSize: 9}},
+						ComboBox{AssignTo: &presetBox, Model: presetLabels, CurrentIndex: 1, Enabled: !installed, MinSize: Size{Width: 230}},
+						Label{Text: "Advanced: edit config.yml in " + paths.DataDir() + ".", Font: Font{Family: "Segoe UI", PointSize: 8}},
+					}},
+				},
+			},
 			Label{
-				Text: "The installer registers one automatic LocalSystem service. It renders at boot, after session changes, and every five minutes. No network connection is required.",
+				Text: "One automatic LocalSystem service renders at boot, after session changes, and every five minutes. The Generated at timestamp is always visible.",
 				Font: Font{Family: "Segoe UI", PointSize: 9},
 			},
 			VSpacer{},
@@ -58,9 +94,21 @@ func Main() error {
 	if err != nil {
 		return err
 	}
+	centerInWorkArea(window)
 
 	run := func(uninstall bool) {
+		preset := ""
+		if !uninstall && !setup.IsInstalled() {
+			index := presetBox.CurrentIndex()
+			if index < 0 || index >= len(choices) {
+				index = 1
+			}
+			preset = choices[index].Name
+		}
 		args := []string{"--install"}
+		if preset != "" {
+			args = append(args, "--preset", preset)
+		}
 		if uninstall {
 			args = []string{"--uninstall"}
 		}
@@ -74,6 +122,7 @@ func Main() error {
 		}
 		installButton.SetEnabled(false)
 		uninstallButton.SetEnabled(false)
+		presetBox.SetEnabled(false)
 		stateLabel.SetText("Working…")
 		detailLabel.SetText("Preparing the requested change.")
 		go func() {
@@ -84,13 +133,14 @@ func Main() error {
 			if uninstall {
 				opErr = setup.Uninstall(progress, false)
 			} else {
-				opErr = setup.Install(progress)
+				opErr = setup.InstallWithPreset(progress, preset)
 			}
 			window.Synchronize(func() {
 				installedNow := setup.IsInstalled()
 				installButton.SetText(installText(installedNow))
 				installButton.SetEnabled(true)
 				uninstallButton.SetEnabled(installedNow)
+				presetBox.SetEnabled(!installedNow)
 				if opErr != nil {
 					stateLabel.SetText("The operation could not be completed")
 					detailLabel.SetText(opErr.Error())
@@ -111,6 +161,74 @@ func Main() error {
 	})
 	window.Run()
 	return nil
+}
+
+func presetPreviewWidgets(choices []presetChoice) []Widget {
+	widgets := make([]Widget, 0, len(choices))
+	for _, choice := range choices {
+		choice := choice
+		widgets = append(widgets, Composite{
+			Layout:  VBox{Spacing: 4},
+			MinSize: Size{Width: 215},
+			Children: []Widget{
+				Label{Text: choice.Title, Font: Font{Family: "Segoe UI Semibold", PointSize: 10}},
+				ImageView{Image: choice.Preview, Mode: ImageViewModeShrink, MinSize: Size{Width: 210, Height: 118}, MaxSize: Size{Width: 210, Height: 118}},
+				Label{Text: choice.Description, Font: Font{Family: "Segoe UI", PointSize: 8}},
+			},
+		})
+	}
+	return widgets
+}
+
+func centerInWorkArea(window *walk.MainWindow) {
+	const spiGetWorkArea = 0x0030
+	var workArea win.RECT
+	if !win.SystemParametersInfo(spiGetWorkArea, 0, unsafe.Pointer(&workArea), 0) {
+		return
+	}
+	bounds := window.Bounds()
+	workWidth := int(workArea.Right - workArea.Left)
+	workHeight := int(workArea.Bottom - workArea.Top)
+	bounds.X = int(workArea.Left) + (workWidth-bounds.Width)/2
+	bounds.Y = int(workArea.Top) + (workHeight-bounds.Height)/2
+	_ = window.SetBounds(bounds)
+}
+
+func createPresetPreviews() (map[string]walk.Image, error) {
+	snapshot := sysinfo.Snapshot{
+		Hostname: "LAB-RACK-07", OS: "Windows 11 Enterprise", Edition: "Enterprise", Version: "25H2", Build: "26200.6584",
+		CPU: "Intel Core i7 • 8 logical", GPU: "Display adapter", Memory: "3.2 / 8.0 GiB • 40%", Disk: "22.4 / 64.0 GiB • 35%",
+		IPs: []string{"10.0.2.15"}, Serial: "RACK07-2026", Uptime: "2d 4h 12m", ServicesRunning: 124, ServicesTotal: 132,
+		CriticalServices: []sysinfo.ServiceState{
+			{Name: "Defender", Running: true}, {Name: "DHCP", Running: true},
+			{Name: "DNS Client", Running: true}, {Name: "Event Log", Running: true},
+		},
+		FailedAutoServices: []string{"ExampleSvc"}, PendingReboot: true,
+		DisplayWidth: 1280, DisplayHeight: 720, RefreshedAt: time.Now(),
+	}
+	result := make(map[string]walk.Image, 3)
+	for _, name := range []string{config.PresetIdentity, config.PresetBalanced, config.PresetOperations} {
+		cfg, _ := config.ForPreset(name)
+		cfg.Width, cfg.Height = 1280, 720
+		img, err := overlay.Render(snapshot, cfg)
+		if err != nil {
+			disposePreviews(result)
+			return nil, err
+		}
+		preview, err := walk.NewBitmapFromImage(img)
+		if err != nil {
+			disposePreviews(result)
+			return nil, err
+		}
+		result[name] = preview
+	}
+	return result, nil
+}
+
+func disposePreviews(previews map[string]walk.Image) {
+	for _, preview := range previews {
+		preview.Dispose()
+	}
 }
 
 func RunOperation(title string, operation func(setup.ProgressFunc) error) error {
@@ -158,7 +276,7 @@ func RunOperation(title string, operation func(setup.ProgressFunc) error) error 
 
 func installationSummary(installed bool) (string, string) {
 	if !installed {
-		return "Not installed", "Select Install to activate the boot-time pre-login status background."
+		return "Not installed", "Choose a starting layout, then select Install."
 	}
 	status, err := setup.ReadStatus()
 	if err != nil {

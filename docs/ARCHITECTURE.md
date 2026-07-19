@@ -18,9 +18,9 @@ The installer copies itself to `C:\Program Files\BackgroundChanger\BackgroundCha
 
 ## Refresh sequence
 
-1. Load or create `C:\ProgramData\BackgroundChanger\config.json`.
+1. Load or create `C:\ProgramData\BackgroundChanger\config.yml`, resolving the selected named preset or custom field visibility.
 2. Gather machine facts from Windows registry, WMI, network interfaces, and system counters.
-3. Render a new resolution-aware JPEG with a unique timestamp in its filename.
+3. Render a new resolution-aware JPEG with a unique timestamp in its filename and a non-configurable, timezone-qualified **Generated at** label in the image itself.
 4. Set `HKLM\Software\Policies\Microsoft\Windows\Personalization\LockScreenImage` and the related no-change/no-overlay values.
 5. Enable `HKLM\Software\Policies\Microsoft\Windows\System\DisableAcrylicBackgroundOnLogon`, the registry mapping for Microsoft's **Show clear logon background** policy.
 6. Attempt the documented `MDM_Personalization` WMI bridge as a second application path. This class is explicitly partitioned for LocalSystem.
@@ -34,6 +34,7 @@ The service performs a synchronous first render before reporting `Running`, a se
 - `LogonUI.exe` is never terminated or injected into.
 - No credential provider is installed and no credential data is inspected.
 - The service has no listener, remote API, updater, or outbound network dependency.
+- Hostname and the generated timestamp cannot be disabled, so every screen identifies both the machine and the age of its data.
 - Existing policy values are backed up before the first install and restored only if the active image still belongs to BackgroundChanger.
 - The app does not change Windows editions or enable Shared PC / education policies to work around Microsoft licensing boundaries.
 - The product-key export used for local VM creation is ignored and never read into build artifacts or logs.

@@ -51,7 +51,6 @@ func Render(snapshot sysinfo.Snapshot, cfg config.Config) (image.Image, error) {
 	}
 	padding := 64.0 * scale
 	panelWidth := (float64(width) - padding*2) * 0.39
-	panelHeight := min(470*scale, float64(height)*0.48)
 	panelY := padding + 190*scale
 	rightPanelX := float64(width) - padding - panelWidth
 
@@ -75,31 +74,32 @@ func Render(snapshot sysinfo.Snapshot, cfg config.Config) (image.Image, error) {
 	dc.SetColor(color.RGBA{174, 192, 210, 255})
 	dc.DrawString("Identify this machine before anyone signs in", padding, padding+139*scale)
 
-	left := []row{
-		{"OS", joinNonEmpty(snapshot.OS, snapshot.Version)},
-		{"BUILD", snapshot.Build},
-		{"CPU", snapshot.CPU},
-		{"GPU", snapshot.GPU},
-		{"MEMORY", snapshot.Memory},
-		{"SYSTEM DISK", snapshot.Disk},
+	left, right := panelRows(snapshot, cfg)
+	criticalRows := 0
+	if cfg.Show.CriticalServices {
+		criticalRows = (min(len(snapshot.CriticalServices), 4) + 1) / 2
 	}
-	right := []row{
-		{"IP", valueOr(strings.Join(snapshot.IPs, ", "), "Waiting for network")},
-		{"SERIAL", snapshot.Serial},
-		{"UPTIME", snapshot.Uptime},
-		{"SERVICES", fmt.Sprintf("%d of %d running", snapshot.ServicesRunning, snapshot.ServicesTotal)},
-		{"RESTART", rebootLabel(snapshot.PendingReboot)},
-	}
+	contentRows := max(len(left), len(right))
+	contentUnits := 82 + float64(contentRows)*panelRowStep + 28
+	healthUnits := 82 + float64(len(right))*panelRowStep + float64(criticalRows)*25 + 24
+	panelHeight := max(228*scale, max(contentUnits, healthUnits)*scale)
+	panelHeight = min(panelHeight, min(490*scale, float64(height)*0.48))
 
-	drawPanel(dc, padding, panelY, panelWidth, panelHeight, scale, "SYSTEM", left)
-	drawPanel(dc, rightPanelX, panelY, panelWidth, panelHeight, scale, "HEALTH", right)
-	drawHealth(dc, rightPanelX, panelY, panelWidth, panelHeight, scale, snapshot)
+	if len(left) > 0 {
+		drawPanel(dc, padding, panelY, panelWidth, panelHeight, scale, "SYSTEM", left)
+	}
+	if len(right) > 0 || criticalRows > 0 {
+		drawPanel(dc, rightPanelX, panelY, panelWidth, panelHeight, scale, "HEALTH", right)
+		if cfg.Show.CriticalServices {
+			drawHealth(dc, rightPanelX, panelY, panelWidth, panelHeight, scale, len(right), snapshot)
+		}
+	}
 
 	if err := setFont(dc, 14*scale); err != nil {
 		return nil, err
 	}
 	dc.SetColor(color.RGBA{153, 172, 191, 255})
-	footer := "Updated " + snapshot.RefreshedAt.Format("2006-01-02 15:04:05 MST")
+	footer := generatedAtLabel(snapshot)
 	dc.DrawStringAnchored(footer, float64(width)-padding, float64(height)-18*scale, 1, 1)
 	return dc.Image(), nil
 }
@@ -136,6 +136,57 @@ func RenderToFile(path string, snapshot sysinfo.Snapshot, cfg config.Config) err
 
 type row struct{ label, value string }
 
+const panelRowStep = 54
+
+func panelRows(snapshot sysinfo.Snapshot, cfg config.Config) (left, right []row) {
+	show := cfg.Show
+	if show.OS {
+		left = append(left, row{"OS", joinNonEmpty(snapshot.OS, snapshot.Version)})
+	}
+	if show.Build {
+		left = append(left, row{"BUILD", snapshot.Build})
+	}
+	if show.CPU {
+		left = append(left, row{"CPU", snapshot.CPU})
+	}
+	if show.GPU {
+		left = append(left, row{"GPU", snapshot.GPU})
+	}
+	if show.Memory {
+		left = append(left, row{"MEMORY", snapshot.Memory})
+	}
+	if show.Disk {
+		left = append(left, row{"SYSTEM DISK", snapshot.Disk})
+	}
+	if show.IP {
+		right = append(right, row{"IP", valueOr(strings.Join(snapshot.IPs, ", "), "Waiting for network")})
+	}
+	if show.Serial {
+		right = append(right, row{"SERIAL", snapshot.Serial})
+	}
+	if show.Uptime {
+		right = append(right, row{"UPTIME", snapshot.Uptime})
+	}
+	if show.Services {
+		right = append(right, row{"SERVICES", fmt.Sprintf("%d of %d running", snapshot.ServicesRunning, snapshot.ServicesTotal)})
+	}
+	if show.Restart {
+		right = append(right, row{"RESTART", rebootLabel(snapshot.PendingReboot)})
+	}
+	if show.FailedAutoServices {
+		value := "None"
+		if len(snapshot.FailedAutoServices) > 0 {
+			value = strings.Join(snapshot.FailedAutoServices, ", ")
+		}
+		right = append(right, row{"AUTO FAILURES", value})
+	}
+	return left, right
+}
+
+func generatedAtLabel(snapshot sysinfo.Snapshot) string {
+	return "Generated at " + snapshot.RefreshedAt.Format("2006-01-02 15:04:05 MST")
+}
+
 func drawPanel(dc *gg.Context, x, y, width, height, scale float64, title string, rows []row) {
 	dc.SetRGBA(0.025, 0.055, 0.10, 0.89)
 	dc.DrawRoundedRectangle(x, y, width, height, 22*scale)
@@ -149,7 +200,7 @@ func drawPanel(dc *gg.Context, x, y, width, height, scale float64, title string,
 	dc.DrawString(title, x+28*scale, y+38*scale)
 
 	rowY := y + 82*scale
-	step := 58 * scale
+	step := panelRowStep * scale
 	for _, item := range rows {
 		_ = setFont(dc, 12*scale)
 		dc.SetColor(color.RGBA{128, 153, 178, 255})
@@ -164,8 +215,8 @@ func drawPanel(dc *gg.Context, x, y, width, height, scale float64, title string,
 	}
 }
 
-func drawHealth(dc *gg.Context, x, y, width, height, scale float64, snapshot sysinfo.Snapshot) {
-	startY := y + 82*scale + 5*58*scale
+func drawHealth(dc *gg.Context, x, y, width, height, scale float64, precedingRows int, snapshot sysinfo.Snapshot) {
+	startY := y + 82*scale + float64(precedingRows)*panelRowStep*scale
 	if startY > y+height-32*scale {
 		return
 	}

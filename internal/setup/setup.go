@@ -27,6 +27,12 @@ import (
 type ProgressFunc func(percent int, message string)
 
 func Install(progress ProgressFunc) error {
+	return InstallWithPreset(progress, "")
+}
+
+// InstallWithPreset writes a selected starting layout only for an explicit
+// first-install choice. An empty preset preserves an existing power-user file.
+func InstallWithPreset(progress ProgressFunc, preset string) error {
 	progress = safeProgress(progress)
 	if !IsAdministrator() {
 		return errors.New("administrator privileges are required")
@@ -41,7 +47,15 @@ func Install(progress ProgressFunc) error {
 	if err := loginscreen.BackupPolicies(paths.PolicyBackupFile()); err != nil {
 		return fmt.Errorf("back up existing lock-screen policy: %w", err)
 	}
-	if _, err := config.LoadOrCreate(paths.ConfigFile()); err != nil {
+	if preset != "" {
+		cfg, err := config.ForPreset(preset)
+		if err != nil {
+			return err
+		}
+		if err := config.Save(paths.ConfigFile(), cfg); err != nil {
+			return fmt.Errorf("write preset configuration: %w", err)
+		}
+	} else if _, err := config.LoadOrCreate(paths.ConfigFile()); err != nil {
 		return fmt.Errorf("create configuration: %w", err)
 	}
 

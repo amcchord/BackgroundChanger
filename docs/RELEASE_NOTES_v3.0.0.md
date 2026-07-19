@@ -5,13 +5,16 @@ Version 3 is a ground-up redesign focused on one outcome: current machine identi
 ## Highlights
 
 - New fastfetch-inspired, resolution-aware pre-login design
+- Three installer presets with live screenshot examples: Identity, Balanced, and Operations
+- Power-user `config.yml` with per-field visibility, refresh, background-image, and output-size controls
+- Hostname and timezone-qualified **Generated at** text are permanently included so stale output is obvious
 - One self-contained native Windows executable for setup, service, repair, and uninstall
 - Automatic LocalSystem service refreshes during boot, after boot settles, every five minutes, and on session/power events
 - Versioned image rotation avoids stale Windows image caches
 - Uses supported Group Policy and Microsoft's LocalSystem `MDM_Personalization` bridge
 - Reserves the Windows 11 top-center and Windows 10 lower-left clock regions and disables credential-screen acrylic blur
 - Never terminates `LogonUI.exe`; only refreshes `LockApp.exe` when it is present
-- Native graphical installer with offline install and Apps & features registration
+- Native graphical installer with offline install, visual preset selection, and Apps & features registration
 - Atomic status/config writes, append-only diagnostics, service recovery actions, upgrade cleanup, and restoration of pre-existing policy values
 - Automated Go tests, Windows CI build, SHA-256 release checksum, and a three-VM Windows 10/11 validation matrix
 

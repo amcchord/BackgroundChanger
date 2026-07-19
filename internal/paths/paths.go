@@ -31,7 +31,7 @@ func DataDir() string {
 }
 
 func ImageDir() string         { return filepath.Join(DataDir(), "backgrounds") }
-func ConfigFile() string       { return filepath.Join(DataDir(), "config.json") }
+func ConfigFile() string       { return filepath.Join(DataDir(), "config.yml") }
 func StatusFile() string       { return filepath.Join(DataDir(), "status.json") }
 func LogFile() string          { return filepath.Join(DataDir(), "BackgroundChanger.log") }
 func PolicyBackupFile() string { return filepath.Join(DataDir(), "policy-backup.json") }

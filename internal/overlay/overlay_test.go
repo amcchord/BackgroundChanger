@@ -34,3 +34,30 @@ func TestCompact(t *testing.T) {
 		t.Fatalf("compact = %q", got)
 	}
 }
+
+func TestPresetRowsAndGeneratedAtInvariant(t *testing.T) {
+	snapshot := sysinfo.Snapshot{
+		OS: "Windows 11 Enterprise", Version: "25H2", Build: "26200.1234",
+		CPU: "CPU", GPU: "GPU", Memory: "memory", Disk: "disk", IPs: []string{"10.0.2.15"},
+		Serial: "serial", Uptime: "1h", ServicesRunning: 10, ServicesTotal: 12,
+		FailedAutoServices: []string{"ExampleSvc"},
+		RefreshedAt:        time.Date(2026, 7, 18, 20, 1, 2, 0, time.FixedZone("EDT", -4*60*60)),
+	}
+	identity, _ := config.ForPreset(config.PresetIdentity)
+	left, right := panelRows(snapshot, identity)
+	if len(left) != 2 || len(right) != 2 {
+		t.Fatalf("identity rows = %v / %v", left, right)
+	}
+	operations, _ := config.ForPreset(config.PresetOperations)
+	_, right = panelRows(snapshot, operations)
+	foundFailures := false
+	for _, item := range right {
+		foundFailures = foundFailures || item.label == "AUTO FAILURES"
+	}
+	if !foundFailures {
+		t.Fatalf("operations rows = %v", right)
+	}
+	if got := generatedAtLabel(snapshot); got != "Generated at 2026-07-18 20:01:02 EDT" {
+		t.Fatalf("generatedAtLabel = %q", got)
+	}
+}

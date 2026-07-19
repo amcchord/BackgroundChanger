@@ -1,31 +1,88 @@
-// Package config defines the small, administrator-editable service configuration.
+// Package config defines the administrator-editable YAML service configuration.
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
 	MinRefreshMinutes = 1
 	MaxRefreshMinutes = 1440
+
+	PresetIdentity   = "identity"
+	PresetBalanced   = "balanced"
+	PresetOperations = "operations"
+	PresetCustom     = "custom"
 )
 
+type Visibility struct {
+	OS                 bool `json:"os" yaml:"os"`
+	Build              bool `json:"build" yaml:"build"`
+	CPU                bool `json:"cpu" yaml:"cpu"`
+	GPU                bool `json:"gpu" yaml:"gpu"`
+	Memory             bool `json:"memory" yaml:"memory"`
+	Disk               bool `json:"disk" yaml:"disk"`
+	IP                 bool `json:"ip" yaml:"ip"`
+	Serial             bool `json:"serial" yaml:"serial"`
+	Uptime             bool `json:"uptime" yaml:"uptime"`
+	Services           bool `json:"services" yaml:"services"`
+	Restart            bool `json:"restart" yaml:"restart"`
+	CriticalServices   bool `json:"critical_services" yaml:"critical_services"`
+	FailedAutoServices bool `json:"failed_auto_services" yaml:"failed_auto_services"`
+}
+
 type Config struct {
-	RefreshMinutes int    `json:"refresh_minutes"`
-	BaseImage      string `json:"base_image,omitempty"`
-	Width          int    `json:"width,omitempty"`
-	Height         int    `json:"height,omitempty"`
+	Preset         string     `json:"preset" yaml:"preset"`
+	RefreshMinutes int        `json:"refresh_minutes" yaml:"refresh_minutes"`
+	BaseImage      string     `json:"base_image,omitempty" yaml:"base_image"`
+	Width          int        `json:"width,omitempty" yaml:"width"`
+	Height         int        `json:"height,omitempty" yaml:"height"`
+	Show           Visibility `json:"show" yaml:"show"`
 }
 
 func Default() Config {
-	return Config{RefreshMinutes: 5}
+	cfg, _ := ForPreset(PresetBalanced)
+	return cfg
+}
+
+func ForPreset(name string) (Config, error) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	cfg := Config{Preset: name, RefreshMinutes: 5}
+	switch name {
+	case PresetIdentity:
+		cfg.Show = Visibility{OS: true, Build: true, IP: true, Serial: true}
+	case PresetBalanced:
+		cfg.Show = Visibility{
+			OS: true, Build: true, CPU: true, GPU: true, Memory: true, Disk: true,
+			IP: true, Serial: true, Uptime: true, Services: true, Restart: true,
+			CriticalServices: true,
+		}
+	case PresetOperations:
+		cfg.Show = Visibility{
+			OS: true, Build: true, CPU: true, Memory: true, Disk: true,
+			IP: true, Uptime: true, Services: true, Restart: true,
+			CriticalServices: true, FailedAutoServices: true,
+		}
+	default:
+		return Config{}, fmt.Errorf("unknown preset %q", name)
+	}
+	return cfg, nil
 }
 
 func (c Config) Validate() error {
+	switch c.Preset {
+	case PresetIdentity, PresetBalanced, PresetOperations, PresetCustom:
+	default:
+		return fmt.Errorf("preset must be identity, balanced, operations, or custom")
+	}
 	if c.RefreshMinutes < MinRefreshMinutes || c.RefreshMinutes > MaxRefreshMinutes {
 		return fmt.Errorf("refresh_minutes must be between %d and %d", MinRefreshMinutes, MaxRefreshMinutes)
 	}
@@ -38,14 +95,56 @@ func (c Config) Validate() error {
 	return nil
 }
 
+type diskConfig struct {
+	Preset         string      `json:"preset" yaml:"preset"`
+	RefreshMinutes *int        `json:"refresh_minutes" yaml:"refresh_minutes"`
+	BaseImage      string      `json:"base_image,omitempty" yaml:"base_image,omitempty"`
+	Width          int         `json:"width,omitempty" yaml:"width,omitempty"`
+	Height         int         `json:"height,omitempty" yaml:"height,omitempty"`
+	Show           *Visibility `json:"show" yaml:"show"`
+}
+
 func Load(path string) (Config, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, err
 	}
-	var cfg Config
-	if err := json.Unmarshal(b, &cfg); err != nil {
+	return decode(b, false)
+}
+
+func decode(b []byte, legacyJSON bool) (Config, error) {
+	var raw diskConfig
+	var err error
+	if legacyJSON {
+		err = json.Unmarshal(b, &raw)
+	} else {
+		decoder := yaml.NewDecoder(bytes.NewReader(b))
+		decoder.KnownFields(true)
+		err = decoder.Decode(&raw)
+	}
+	if err != nil {
 		return Config{}, fmt.Errorf("decode config: %w", err)
+	}
+	preset := strings.ToLower(strings.TrimSpace(raw.Preset))
+	if preset == "" {
+		preset = PresetBalanced
+	}
+	cfg, presetErr := ForPreset(preset)
+	if presetErr != nil {
+		if preset != PresetCustom {
+			return Config{}, presetErr
+		}
+		cfg = Config{Preset: PresetCustom, RefreshMinutes: 5}
+	}
+	if raw.RefreshMinutes != nil {
+		cfg.RefreshMinutes = *raw.RefreshMinutes
+	}
+	cfg.BaseImage, cfg.Width, cfg.Height = raw.BaseImage, raw.Width, raw.Height
+	// Named presets are authoritative, so changing only the preset value is a
+	// useful power-user shortcut. Individual field overrides intentionally take
+	// effect only in custom mode (as documented in every generated file).
+	if raw.Show != nil && preset == PresetCustom {
+		cfg.Show = *raw.Show
 	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -61,6 +160,19 @@ func LoadOrCreate(path string) (Config, error) {
 	if !os.IsNotExist(err) {
 		return Config{}, err
 	}
+	// v3 release candidates used config.json. Import it once into the new YAML
+	// format so upgrades preserve refresh, image, and dimension settings.
+	legacyPath := filepath.Join(filepath.Dir(path), "config.json")
+	if b, readErr := os.ReadFile(legacyPath); readErr == nil {
+		cfg, err = decode(b, true)
+		if err != nil {
+			return Config{}, fmt.Errorf("migrate config.json: %w", err)
+		}
+		if err := Save(path, cfg); err != nil {
+			return Config{}, err
+		}
+		return cfg, nil
+	}
 	cfg = Default()
 	if err := Save(path, cfg); err != nil {
 		return Config{}, err
@@ -75,11 +187,12 @@ func Save(path string, cfg Config) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	b, err := json.MarshalIndent(cfg, "", "  ")
+	b, err := yaml.Marshal(cfg)
 	if err != nil {
 		return err
 	}
-	b = append(b, '\n')
+	header := []byte("# BackgroundChanger power-user configuration.\n# Hostname and the Generated at timestamp are always shown.\n# Set preset to custom after changing individual show values.\n")
+	b = append(header, b...)
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, b, 0o644); err != nil {
 		return err

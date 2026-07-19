@@ -11,17 +11,19 @@ It is intended for labs, equipment rooms, VM fleets, classrooms, and other place
 - Hostname, Windows version/build, BIOS serial number, and IPv4 addresses
 - CPU, GPU, memory, system-disk usage, and uptime
 - Running-service count and the state of Defender, DHCP, DNS, Event Log, time sync, and Windows Update
-- Pending-reboot state and the exact refresh time
+- Pending-reboot state and the exact generation time
+
+The hostname and a timezone-qualified **Generated at** timestamp are always visible, including in custom configurations. That makes a stale screen obvious instead of merely showing old data without warning.
 
 The layout reserves Windows 11's top-center clock area and Windows 10's lower-left clock area. The installer also enables Microsoft's **Show clear logon background** policy so the information remains readable on the credential screen.
 
 ## Install
 
 1. Download `BackgroundChangerSetup.exe` from the [latest release](https://github.com/amcchord/BackgroundChanger/releases/latest).
-2. Open it and select **Install**.
+2. Open it, choose a starting layout, and select **Install**.
 3. Approve the Windows administrator prompt.
 
-The installer is self-contained and works offline. It installs one automatic LocalSystem service and immediately generates the first background.
+The installer is self-contained and works offline. Choose one of its three visual presets—**Identity**, **Balanced**, or **Operations**—then it installs one automatic LocalSystem service and immediately generates the first background. The installer shows a real rendered preview of every preset before anything is changed.
 
 ![BackgroundChanger graphical installer](assets/screenshots/installer.png)
 
@@ -59,26 +61,23 @@ BackgroundChanger creates:
 
 ```text
 C:\Program Files\BackgroundChanger\BackgroundChanger.exe
-C:\ProgramData\BackgroundChanger\config.json
+C:\ProgramData\BackgroundChanger\config.yml
 C:\ProgramData\BackgroundChanger\status.json
 C:\ProgramData\BackgroundChanger\BackgroundChanger.log
 C:\ProgramData\BackgroundChanger\backgrounds\
 ```
 
-Default configuration:
+The installer offers three useful starting points:
 
-```json
-{
-  "refresh_minutes": 5
-}
-```
+| Preset | Focus | Included details |
+|---|---|---|
+| **Identity** | Tell similar machines apart quickly | OS/build, IPv4, serial |
+| **Balanced** | Everyday machine status | Identity plus CPU/GPU, memory, disk, uptime, service count, restart state, critical services |
+| **Operations** | Troubleshooting and fleet health | Resources, service/restart state, and failed automatic services |
 
-Optional settings:
+`config.yml` exposes every field as a readable Boolean for power users. Set `preset: custom` before changing individual `show` values; changing `preset` to one of the three named values applies that complete preset. You can also tune `refresh_minutes`, use a local JPEG/PNG with `base_image`, or force both `width` and `height`. Hostname and **Generated at** cannot be hidden.
 
-- `base_image`: absolute path to a local JPEG or PNG used behind the status panels
-- `width` and `height`: fixed output dimensions; both must be set together
-
-Restart the service after changing `refresh_minutes`. The status JSON records the last snapshot, policy results, image path, Windows-edition compatibility, and any warnings. The log is append-only and contains no credentials or product keys.
+See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the complete annotated example. Display changes are read on the next refresh; restart the service after changing `refresh_minutes`. The status JSON records the last snapshot, policy results, image path, Windows-edition compatibility, and any warnings. The log is append-only and contains no credentials or product keys.
 
 Maintenance commands, run from an elevated shell:
 
