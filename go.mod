@@ -1,4 +1,4 @@
-module github.com/amcchord/BackgroundChanger
+module github.com/amcchord/WallpaperIdentity/v4
 
 go 1.24.0
 

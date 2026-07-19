@@ -21,10 +21,18 @@ jobs:
         run: go test ./...
       - name: Build installer
         shell: pwsh
-        run: ./build.ps1 -Version ci -Commit $env:GITHUB_SHA
+        run: ./build.ps1 -Version v4.0.0 -Commit $env:GITHUB_SHA
+      - name: Smoke-test headless CLI
+        shell: pwsh
+        run: |
+          $result = & ./dist/WallpaperIdentityCLI.exe version --json | ConvertFrom-Json
+          if (-not $result.success -or $result.schema_version -ne 1 -or $result.command -ne 'version') {
+            throw "Unexpected CLI result: $($result | ConvertTo-Json -Compress)"
+          }
       - uses: actions/upload-artifact@v4
         with:
-          name: BackgroundChangerSetup
+          name: WallpaperIdentitySetup
           path: |
-            dist/BackgroundChangerSetup.exe
+            dist/WallpaperIdentitySetup.exe
+            dist/WallpaperIdentityCLI.exe
             dist/SHA256SUMS.txt

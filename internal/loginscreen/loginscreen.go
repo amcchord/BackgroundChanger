@@ -15,9 +15,11 @@ import (
 	"time"
 	"unicode/utf16"
 
-	"github.com/amcchord/BackgroundChanger/internal/paths"
+	"github.com/amcchord/WallpaperIdentity/v4/internal/paths"
 	"golang.org/x/sys/windows/registry"
 )
+
+const ownedMDMImagePattern = `(?i)(Wallpaper(?:[ ]|%20)Identity|BackgroundChanger)[/\\]backgrounds[/\\]`
 
 const personalizationPolicy = `SOFTWARE\Policies\Microsoft\Windows\Personalization`
 const systemPolicy = `SOFTWARE\Policies\Microsoft\Windows\System`
@@ -139,7 +141,7 @@ if ($null -eq $instance) {
 
 // RestoreMDMBridge rolls back the LocalSystem-only Personalization CSP value.
 // It intentionally leaves a value alone if another administrator or MDM has
-// replaced BackgroundChanger's URL since installation.
+// replaced Wallpaper Identity's URL since installation.
 func RestoreMDMBridge() error {
 	quotedBackup := strings.ReplaceAll(paths.MDMBackupFile(), "'", "''")
 	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
@@ -151,14 +153,14 @@ $record=Get-Content -LiteralPath $backup -Raw | ConvertFrom-Json
 $instance=Get-CimInstance -Namespace $ns -ClassName $class -ErrorAction SilentlyContinue | Where-Object { $_.ParentID -eq './Vendor/MSFT' -and $_.InstanceID -eq 'Personalization' } | Select-Object -First 1
 if ($null -eq $instance) { return }
 $current=[string]$instance.LockScreenImageUrl
-if ($current -notmatch '(?i)BackgroundChanger[/\\]backgrounds[/\\]') { return }
+if ($current -notmatch '%s') { return }
 if ([bool]$record.Existed) {
   Set-CimInstance -CimInstance $instance -Property @{ LockScreenImageUrl=[string]$record.Url } | Out-Null
 } elseif ([string]::IsNullOrEmpty([string]$instance.DesktopImageUrl)) {
   Remove-CimInstance -CimInstance $instance
 } else {
   Set-CimInstance -CimInstance $instance -Property @{ LockScreenImageUrl=$null } | Out-Null
-}`, quotedBackup)
+}`, quotedBackup, ownedMDMImagePattern)
 	powershell := filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
 	if _, err := os.Stat(powershell); err != nil {
 		powershell = "powershell.exe"
@@ -209,9 +211,10 @@ func BackupPolicies(path string) error {
 		backup.LockScreenOverlaysDisabled = readDWORDValue(key, "LockScreenOverlaysDisabled")
 		key.Close()
 	}
-	// Values left behind by the pre-v3 application are not useful restoration
+	// Values owned by an earlier W:ID version are not useful restoration
 	// targets; treating them as absent completes the migration cleanly.
-	if strings.Contains(strings.ToLower(backup.LockScreenImage.String), `\bgstatusservice\`) {
+	legacyImage := strings.ToLower(backup.LockScreenImage.String)
+	if strings.Contains(legacyImage, `\bgstatusservice\`) || strings.Contains(legacyImage, `\backgroundchanger\backgrounds\`) {
 		backup.LockScreenImage = policyValue{}
 		backup.NoChangingLockScreen = policyValue{}
 		backup.LockScreenOverlaysDisabled = policyValue{}
@@ -231,7 +234,7 @@ func BackupPolicies(path string) error {
 	return os.WriteFile(path, b, 0o600)
 }
 
-func RestorePolicies(backupPath, ownedDataDir string) []error {
+func RestorePolicies(backupPath string, ownedDataDirs ...string) []error {
 	var errors []error
 	backup := policyBackup{}
 	if b, err := os.ReadFile(backupPath); err == nil {
@@ -241,7 +244,7 @@ func RestorePolicies(backupPath, ownedDataDir string) []error {
 	}
 	key, err := registry.OpenKey(registry.LOCAL_MACHINE, personalizationPolicy, registry.QUERY_VALUE|registry.SET_VALUE)
 	if err == nil {
-		if current, _, valueErr := key.GetStringValue("LockScreenImage"); valueErr == nil && isOwnedPath(current, ownedDataDir) {
+		if current, _, valueErr := key.GetStringValue("LockScreenImage"); valueErr == nil && isOwnedByAnyPath(current, ownedDataDirs) {
 			errors = append(errors, restoreStringValue(key, "LockScreenImage", backup.LockScreenImage)...)
 			errors = append(errors, restoreDWORDValue(key, "NoChangingLockScreen", backup.NoChangingLockScreen)...)
 			errors = append(errors, restoreDWORDValue(key, "LockScreenOverlaysDisabled", backup.LockScreenOverlaysDisabled)...)
@@ -259,6 +262,15 @@ func RestorePolicies(backupPath, ownedDataDir string) []error {
 		errors = append(errors, err)
 	}
 	return errors
+}
+
+func isOwnedByAnyPath(value string, dataDirs []string) bool {
+	for _, dataDir := range dataDirs {
+		if isOwnedPath(value, dataDir) {
+			return true
+		}
+	}
+	return false
 }
 
 func readStringValue(key registry.Key, name string) policyValue {
