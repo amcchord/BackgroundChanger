@@ -42,6 +42,7 @@ func (e *Engine) Refresh(reason string) (Status, error) {
 	if err != nil {
 		return e.fail(reason, Status{}, fmt.Errorf("load config: %w", err))
 	}
+	cfg.BaseImage = paths.ResolveBackgroundImage(cfg.BaseImage)
 	snapshot := sysinfo.Gather()
 	nativeSupported := sysinfo.SupportsMachineLockScreenPolicy(snapshot.Edition)
 	professional := sysinfo.IsProfessionalEdition(snapshot.Edition)
@@ -111,6 +112,7 @@ func (e *Engine) RenderPreview(path string) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
+	cfg.BaseImage = paths.ResolveBackgroundImage(cfg.BaseImage)
 	snapshot := sysinfo.Gather()
 	nativeSupported := sysinfo.SupportsMachineLockScreenPolicy(snapshot.Edition)
 	status := Status{

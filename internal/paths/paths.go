@@ -54,7 +54,27 @@ func LegacyDataDir() string {
 	return filepath.Join(base, LegacyProductName)
 }
 
-func ImageDir() string { return filepath.Join(DataDir(), "backgrounds") }
+func ImageDir() string               { return filepath.Join(DataDir(), "backgrounds") }
+func StandardBackgroundJPEG() string { return filepath.Join(DataDir(), "background.jpg") }
+func StandardBackgroundPNG() string  { return filepath.Join(DataDir(), "background.png") }
+func StandardBackgroundFiles() []string {
+	return []string{StandardBackgroundJPEG(), StandardBackgroundPNG()}
+}
+
+// ResolveBackgroundImage keeps an explicit power-user path authoritative and
+// otherwise discovers the documented replace-in-place background files.
+func ResolveBackgroundImage(configured string) string {
+	if configured != "" {
+		return configured
+	}
+	for _, candidate := range StandardBackgroundFiles() {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return ""
+}
+
 func CSPImageDir() string {
 	base := os.Getenv("ProgramData")
 	if base == "" {

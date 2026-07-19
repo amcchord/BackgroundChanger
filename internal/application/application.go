@@ -35,16 +35,20 @@ const (
 )
 
 type commandOptions struct {
-	Name        string
-	Preset      string
-	ConfigFile  string
-	Output      string
-	Headless    bool
-	Quiet       bool
-	JSON        bool
-	ResultFile  string
-	RemoveData  bool
-	Interactive bool
+	Name            string
+	Preset          string
+	ConfigFile      string
+	BackgroundImage string
+	BackgroundColor string
+	BackgroundMode  string
+	Output          string
+	Headless        bool
+	Quiet           bool
+	JSON            bool
+	ResultFile      string
+	RemoveData      bool
+	UseColors       bool
+	Interactive     bool
 }
 
 type commandResult struct {
@@ -184,6 +188,18 @@ func execute(options commandOptions) (commandResult, error) {
 			}
 			options.ConfigFile = absolute
 		}
+		if options.BackgroundImage != "" {
+			absolute, err := filepath.Abs(options.BackgroundImage)
+			if err != nil {
+				return result, fail(exitUsage, "resolve --background-image: %v", err)
+			}
+			probe := config.Default()
+			probe.BaseImage = absolute
+			if err := config.ValidateAssets(probe); err != nil {
+				return result, fail(exitUsage, "invalid --background-image %q: %v", absolute, err)
+			}
+			options.BackgroundImage = absolute
+		}
 		if !setup.IsAdministrator() {
 			if options.Headless {
 				return result, fail(exitAdminRequired, "administrator privileges are required for unattended %s", options.Name)
@@ -197,7 +213,11 @@ func execute(options commandOptions) (commandResult, error) {
 		var setupResult setup.OperationResult
 		operation := func(progress setup.ProgressFunc) error {
 			var err error
-			setupResult, err = setup.InstallWithOptionsResult(progress, setup.InstallOptions{Preset: options.Preset, ConfigFile: options.ConfigFile})
+			setupResult, err = setup.InstallWithOptionsResult(progress, setup.InstallOptions{
+				Preset: options.Preset, ConfigFile: options.ConfigFile,
+				BackgroundImage: options.BackgroundImage, BackgroundColor: options.BackgroundColor,
+				BackgroundMode: options.BackgroundMode, UseColors: options.UseColors,
+			})
 			return err
 		}
 		var operationErr error
@@ -384,20 +404,41 @@ func parseCommand(args []string) (commandOptions, error) {
 		flags.BoolVar(&options.Interactive, "interactive", false, "allow GUI and UAC elevation")
 		flags.StringVar(&options.Preset, "preset", "", "identity, balanced, or operations")
 		flags.StringVar(&options.ConfigFile, "config", "", "validated YAML configuration to deploy")
+		flags.StringVar(&options.BackgroundImage, "background-image", "", "JPEG or PNG to copy into the standard background location")
+		flags.StringVar(&options.BackgroundColor, "background-color", "", "blue, teal, green, purple, slate, or copper")
+		flags.StringVar(&options.BackgroundMode, "background-mode", "", "dark or light")
+		flags.BoolVar(&options.UseColors, "use-colors", false, "remove the standard image and use the configured color")
 		if err := flags.Parse(arguments); err != nil {
 			return options, err
 		}
 		if flags.NArg() != 0 {
 			return options, fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
 		}
-		if options.Preset != "" && options.ConfigFile != "" {
-			return options, errors.New("--preset and --config are mutually exclusive")
+		if options.ConfigFile != "" && (options.Preset != "" || options.BackgroundImage != "" || options.BackgroundColor != "" || options.BackgroundMode != "" || options.UseColors) {
+			return options, errors.New("--config cannot be combined with --preset or background options")
+		}
+		if options.BackgroundImage != "" && options.UseColors {
+			return options, errors.New("--background-image and --use-colors are mutually exclusive")
 		}
 		if options.Preset != "" {
 			if _, err := config.ForPreset(options.Preset); err != nil {
 				return options, err
 			}
 			options.Preset = strings.ToLower(options.Preset)
+		}
+		options.BackgroundColor = strings.ToLower(strings.TrimSpace(options.BackgroundColor))
+		options.BackgroundMode = strings.ToLower(strings.TrimSpace(options.BackgroundMode))
+		if options.BackgroundColor != "" || options.BackgroundMode != "" {
+			probe := config.Default()
+			if options.BackgroundColor != "" {
+				probe.BackgroundColor = options.BackgroundColor
+			}
+			if options.BackgroundMode != "" {
+				probe.BackgroundMode = options.BackgroundMode
+			}
+			if err := probe.Validate(); err != nil {
+				return options, err
+			}
 		}
 	case "uninstall":
 		flags := newFlags()
@@ -464,7 +505,7 @@ func validateResultTarget(options commandOptions) error {
 	if options.ResultFile == "" {
 		return nil
 	}
-	for label, path := range map[string]string{"--config": options.ConfigFile, "render output": options.Output} {
+	for label, path := range map[string]string{"--config": options.ConfigFile, "--background-image": options.BackgroundImage, "render output": options.Output} {
 		if path == "" {
 			continue
 		}
@@ -513,7 +554,7 @@ func rawResultFileConflict(args []string) bool {
 	normalized := normalizeWindowsArguments(args)
 	for index, argument := range normalized {
 		lower := strings.ToLower(argument)
-		for _, name := range []string{"config", "output"} {
+		for _, name := range []string{"config", "background-image", "output"} {
 			var value string
 			if lower == "--"+name && index+1 < len(normalized) {
 				value = normalized[index+1]
@@ -551,11 +592,11 @@ func normalizeWindowsArguments(arguments []string) []string {
 	for index, argument := range arguments {
 		lower := strings.ToLower(argument)
 		switch lower {
-		case "/headless", "/no-ui", "/quiet", "/silent", "/json", "/remove-data", "/preset", "/config", "/output", "/result-file", "/interactive":
+		case "/headless", "/no-ui", "/quiet", "/silent", "/json", "/remove-data", "/preset", "/config", "/background-image", "/background-color", "/background-mode", "/use-colors", "/output", "/result-file", "/interactive":
 			normalized[index] = "--" + strings.TrimPrefix(lower, "/")
 		default:
 			normalized[index] = argument
-			for _, name := range []string{"preset", "config", "output", "result-file", "json"} {
+			for _, name := range []string{"preset", "config", "background-image", "background-color", "background-mode", "output", "result-file", "json"} {
 				prefix := "/" + name + "="
 				if strings.HasPrefix(lower, prefix) {
 					normalized[index] = "--" + name + "=" + argument[len(prefix):]
@@ -574,6 +615,18 @@ func elevatedInstallArguments(options commandOptions) []string {
 	}
 	if options.ConfigFile != "" {
 		arguments = append(arguments, "--config", options.ConfigFile)
+	}
+	if options.BackgroundImage != "" {
+		arguments = append(arguments, "--background-image", options.BackgroundImage)
+	}
+	if options.BackgroundColor != "" {
+		arguments = append(arguments, "--background-color", options.BackgroundColor)
+	}
+	if options.BackgroundMode != "" {
+		arguments = append(arguments, "--background-mode", options.BackgroundMode)
+	}
+	if options.UseColors {
+		arguments = append(arguments, "--use-colors")
 	}
 	if options.Interactive {
 		arguments = append(arguments, "--interactive")
@@ -726,7 +779,11 @@ Install/repair options:
   --json                  Headless and emit one machine-readable JSON result
   --result-file PATH      Also write the JSON result atomically for RMM collection
   --preset NAME           identity, balanced, or operations (new installs only by convention)
-  --config PATH           Validate and deploy a power-user config.yml; excludes --preset
+  --config PATH           Validate and deploy config.yml; excludes preset/background options
+  --background-image PATH Validate and copy a JPEG/PNG to the standard replaceable location
+  --background-color NAME blue, teal, green, purple, slate, or copper
+  --background-mode MODE  dark or light overlay treatment
+  --use-colors            Remove the standard image and use the configured color backdrop
 
 Uninstall options:
   --headless              Do not show windows or request UAC; requires Administrator/SYSTEM
@@ -748,6 +805,8 @@ Stable exit codes:
 
 RMM examples:
   WallpaperIdentityCLI.exe install --headless --preset balanced
+  WallpaperIdentityCLI.exe install --quiet --background-color teal --background-mode dark --use-colors
+  WallpaperIdentityCLI.exe install --quiet --background-image C:\RMM\server-room.jpg --background-mode light
   WallpaperIdentityCLI.exe install --json --config C:\RMM\wid-config.yml
   WallpaperIdentityCLI.exe install --quiet --result-file C:\RMM\wid-result.json
   WallpaperIdentityCLI.exe repair --quiet

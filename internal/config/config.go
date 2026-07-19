@@ -24,6 +24,16 @@ const (
 	PresetBalanced   = "balanced"
 	PresetOperations = "operations"
 	PresetCustom     = "custom"
+
+	BackgroundBlue   = "blue"
+	BackgroundTeal   = "teal"
+	BackgroundGreen  = "green"
+	BackgroundPurple = "purple"
+	BackgroundSlate  = "slate"
+	BackgroundCopper = "copper"
+
+	BackgroundDark  = "dark"
+	BackgroundLight = "light"
 )
 
 type Visibility struct {
@@ -48,6 +58,8 @@ type Config struct {
 	EnableProCompatibility bool       `json:"enable_pro_compatibility" yaml:"enable_pro_compatibility"`
 	RefreshLoginScreenBoot bool       `json:"refresh_login_screen_on_boot" yaml:"refresh_login_screen_on_boot"`
 	BaseImage              string     `json:"base_image,omitempty" yaml:"base_image"`
+	BackgroundColor        string     `json:"background_color" yaml:"background_color"`
+	BackgroundMode         string     `json:"background_mode" yaml:"background_mode"`
 	Width                  int        `json:"width,omitempty" yaml:"width"`
 	Height                 int        `json:"height,omitempty" yaml:"height"`
 	Show                   Visibility `json:"show" yaml:"show"`
@@ -62,7 +74,7 @@ func ForPreset(name string) (Config, error) {
 	name = strings.ToLower(strings.TrimSpace(name))
 	cfg := Config{
 		Preset: name, RefreshMinutes: 5, EnableProCompatibility: true,
-		RefreshLoginScreenBoot: true,
+		RefreshLoginScreenBoot: true, BackgroundColor: BackgroundBlue, BackgroundMode: BackgroundDark,
 	}
 	switch name {
 	case PresetIdentity:
@@ -85,6 +97,19 @@ func ForPreset(name string) (Config, error) {
 	return cfg, nil
 }
 
+// ApplyPreset changes only the information mix. Operational, sizing, and
+// background settings remain independent so choosing an installer preview does
+// not unexpectedly discard a tuned installation.
+func ApplyPreset(existing Config, name string) (Config, error) {
+	preset, err := ForPreset(name)
+	if err != nil {
+		return Config{}, err
+	}
+	existing.Preset = preset.Preset
+	existing.Show = preset.Show
+	return existing, existing.Validate()
+}
+
 func (c Config) Validate() error {
 	switch c.Preset {
 	case PresetIdentity, PresetBalanced, PresetOperations, PresetCustom:
@@ -97,13 +122,32 @@ func (c Config) Validate() error {
 	if (c.Width == 0) != (c.Height == 0) {
 		return errors.New("width and height must either both be zero or both be set")
 	}
-	if c.Width != 0 && (c.Width < 800 || c.Width > 7680 || c.Height < 600 || c.Height > 4320) {
-		return errors.New("custom dimensions must be between 800x600 and 7680x4320")
+	if c.Width != 0 && (c.Width < 600 || c.Width > 7680 || c.Height < 600 || c.Height > 7680) {
+		return errors.New("custom dimensions must be between 600 and 7680 pixels on each axis")
 	}
 	if c.BaseImage != "" && !filepath.IsAbs(c.BaseImage) {
 		return errors.New("base_image must be an absolute local path")
 	}
+	if !isBackgroundColor(c.BackgroundColor) {
+		return errors.New("background_color must be blue, teal, green, purple, slate, or copper")
+	}
+	if c.BackgroundMode != BackgroundDark && c.BackgroundMode != BackgroundLight {
+		return errors.New("background_mode must be dark or light")
+	}
 	return nil
+}
+
+func BackgroundColors() []string {
+	return []string{BackgroundBlue, BackgroundTeal, BackgroundGreen, BackgroundPurple, BackgroundSlate, BackgroundCopper}
+}
+
+func isBackgroundColor(value string) bool {
+	for _, candidate := range BackgroundColors() {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 // ValidateAssets verifies external files referenced by a supplied deployment
@@ -135,6 +179,8 @@ type diskConfig struct {
 	EnableProCompatibility *bool       `json:"enable_pro_compatibility" yaml:"enable_pro_compatibility"`
 	RefreshLoginScreenBoot *bool       `json:"refresh_login_screen_on_boot" yaml:"refresh_login_screen_on_boot"`
 	BaseImage              string      `json:"base_image,omitempty" yaml:"base_image,omitempty"`
+	BackgroundColor        string      `json:"background_color,omitempty" yaml:"background_color,omitempty"`
+	BackgroundMode         string      `json:"background_mode,omitempty" yaml:"background_mode,omitempty"`
 	Width                  int         `json:"width,omitempty" yaml:"width,omitempty"`
 	Height                 int         `json:"height,omitempty" yaml:"height,omitempty"`
 	Show                   *Visibility `json:"show" yaml:"show"`
@@ -170,7 +216,10 @@ func decode(b []byte, legacyJSON bool) (Config, error) {
 		if preset != PresetCustom {
 			return Config{}, presetErr
 		}
-		cfg = Config{Preset: PresetCustom, RefreshMinutes: 5, EnableProCompatibility: true}
+		cfg = Config{
+			Preset: PresetCustom, RefreshMinutes: 5, EnableProCompatibility: true,
+			RefreshLoginScreenBoot: true, BackgroundColor: BackgroundBlue, BackgroundMode: BackgroundDark,
+		}
 	}
 	if raw.RefreshMinutes != nil {
 		cfg.RefreshMinutes = *raw.RefreshMinutes
@@ -180,6 +229,12 @@ func decode(b []byte, legacyJSON bool) (Config, error) {
 	}
 	if raw.RefreshLoginScreenBoot != nil {
 		cfg.RefreshLoginScreenBoot = *raw.RefreshLoginScreenBoot
+	}
+	if raw.BackgroundColor != "" {
+		cfg.BackgroundColor = strings.ToLower(strings.TrimSpace(raw.BackgroundColor))
+	}
+	if raw.BackgroundMode != "" {
+		cfg.BackgroundMode = strings.ToLower(strings.TrimSpace(raw.BackgroundMode))
 	}
 	cfg.BaseImage, cfg.Width, cfg.Height = raw.BaseImage, raw.Width, raw.Height
 	// Named presets are authoritative, so changing only the preset value is a
@@ -233,7 +288,7 @@ func Save(path string, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	header := []byte("# Wallpaper Identity (W:ID) power-user configuration.\n# Hostname and the Generated at timestamp are always shown.\n# Windows Pro compatibility uses Microsoft's SetEduPolicies switch.\n# An empty pre-login console is refreshed once after each boot.\n# Set preset to custom after changing individual show values.\n")
+	header := []byte("# Wallpaper Identity (W:ID) power-user configuration.\n# Hostname and the Generated at timestamp are always shown.\n# Replace background.jpg or background.png beside this file to change the backdrop.\n# Windows Pro compatibility uses Microsoft's SetEduPolicies switch.\n# An empty pre-login console is refreshed once after each boot.\n# Set preset to custom after changing individual show values.\n")
 	b = append(header, b...)
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, b, 0o644); err != nil {

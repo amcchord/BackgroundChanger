@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"image"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 	"unsafe"
 
@@ -22,9 +24,13 @@ import (
 )
 
 const (
-	defaultPresetIndex  = 1
-	presetPreviewWidth  = 238
-	presetPreviewHeight = 134
+	defaultPresetIndex      = 1
+	presetPreviewWidth      = 238
+	presetPreviewHeight     = 134
+	appearancePreviewWidth  = 430
+	appearancePreviewHeight = 242
+	colorSwatchWidth        = 92
+	colorSwatchHeight       = 22
 )
 
 type presetChoice struct {
@@ -32,6 +38,20 @@ type presetChoice struct {
 	Title       string
 	Description string
 	Preview     walk.Image
+}
+
+type backgroundChoice struct {
+	Name  string
+	Title string
+}
+
+var backgroundChoices = []backgroundChoice{
+	{Name: config.BackgroundBlue, Title: "Azure"},
+	{Name: config.BackgroundTeal, Title: "Teal"},
+	{Name: config.BackgroundGreen, Title: "Forest"},
+	{Name: config.BackgroundPurple, Title: "Indigo"},
+	{Name: config.BackgroundSlate, Title: "Slate"},
+	{Name: config.BackgroundCopper, Title: "Copper"},
 }
 
 func Main() error {
@@ -49,32 +69,65 @@ func Main() error {
 		return fmt.Errorf("create W:ID logo bitmap: %w", err)
 	}
 	defer logoBitmap.Dispose()
-	previews, err := createPresetPreviews()
+	installed := setup.IsInstalled()
+	legacyInstalled := setup.IsLegacyInstalled()
+	appearance := config.Default()
+	selectedPreset := defaultPresetIndex
+	if current, loadErr := config.Load(paths.ConfigFile()); loadErr == nil {
+		appearance = current
+		appearance.BaseImage = paths.ResolveBackgroundImage(current.BaseImage)
+		if index := presetIndexByName(current.Preset); index >= 0 {
+			selectedPreset = index
+		} else if installed {
+			selectedPreset = -1
+		}
+	} else if installed {
+		selectedPreset = -1
+	}
+	selectedBackgroundImage := appearance.BaseImage
+	pendingBackgroundImage := ""
+	backgroundChanged := false
+	useColors := false
+
+	previews, err := createPresetPreviews(appearance)
 	if err != nil {
 		return fmt.Errorf("create preset previews: %w", err)
 	}
-	defer disposePreviews(previews)
 	choices := []presetChoice{
 		{Name: config.PresetIdentity, Title: "Identity", Description: "OS, build, IP and serial", Preview: previews[config.PresetIdentity]},
 		{Name: config.PresetBalanced, Title: "Balanced", Description: "Hardware, capacity and health", Preview: previews[config.PresetBalanced]},
 		{Name: config.PresetOperations, Title: "Operations", Description: "Resources, restart and failures", Preview: previews[config.PresetOperations]},
 	}
+	swatches, err := createBackgroundSwatches(appearance.BackgroundMode)
+	if err != nil {
+		disposePreviews(previews)
+		return fmt.Errorf("create background swatches: %w", err)
+	}
+	appearancePreview, err := createAppearancePreview(appearance, selectedPresetName(selectedPreset))
+	if err != nil {
+		disposePreviews(previews)
+		disposePreviews(swatches)
+		return fmt.Errorf("create background preview: %w", err)
+	}
+	defer func() {
+		disposePreviews(previews)
+		disposePreviews(swatches)
+		if appearancePreview != nil {
+			appearancePreview.Dispose()
+		}
+	}()
 
 	var window *walk.Dialog
-	var stateLabel, detailLabel, selectionLabel *walk.Label
-	var installButton, uninstallButton, closeButton *walk.PushButton
+	var layoutPage, backgroundPage *walk.Composite
+	var stateLabel, detailLabel, selectionLabel, backgroundSelectionLabel *walk.Label
+	var appearanceImageView *walk.ImageView
+	var imageWell, advanceButton, backButton, uninstallButton, closeButton *walk.PushButton
 	presetButtons := make([]*walk.PushButton, len(choices))
+	colorButtons := make([]*walk.PushButton, len(backgroundChoices))
+	modeButtons := make([]*walk.PushButton, 2)
 	working := false
-	installed := setup.IsInstalled()
-	legacyInstalled := setup.IsLegacyInstalled()
-	selectedPreset := defaultPresetIndex
 	presetChanged := false
-	if installed {
-		selectedPreset = -1
-		if current, loadErr := config.Load(paths.ConfigFile()); loadErr == nil {
-			selectedPreset = presetIndex(choices, current.Preset)
-		}
-	}
+	page := 0
 	state, detail := installationSummary(installed, legacyInstalled)
 	platformNote := "Native policy support: Windows Enterprise, Education, IoT Enterprise, and Server."
 	if sysinfo.IsProfessionalEdition(sysinfo.CurrentEdition()) {
@@ -90,6 +143,136 @@ func Main() error {
 		if selectionLabel != nil {
 			selectionLabel.SetText(presetSelectionText(choices, selectedPreset, installed, presetChanged))
 		}
+		if appearanceImageView != nil {
+			newPreview, previewErr := createAppearancePreview(appearance, selectedPresetName(selectedPreset))
+			if previewErr == nil {
+				_ = appearanceImageView.SetImage(newPreview)
+				appearancePreview.Dispose()
+				appearancePreview = newPreview
+			}
+		}
+	}
+	refreshAppearance := func(refreshSwatches bool) error {
+		newPreviews, refreshErr := createPresetPreviews(appearance)
+		if refreshErr != nil {
+			return refreshErr
+		}
+		newAppearance, refreshErr := createAppearancePreview(appearance, selectedPresetName(selectedPreset))
+		if refreshErr != nil {
+			disposePreviews(newPreviews)
+			return refreshErr
+		}
+		var newSwatches map[string]walk.Image
+		if refreshSwatches {
+			newSwatches, refreshErr = createBackgroundSwatches(appearance.BackgroundMode)
+			if refreshErr != nil {
+				disposePreviews(newPreviews)
+				newAppearance.Dispose()
+				return refreshErr
+			}
+		}
+		for index, choice := range choices {
+			_ = presetButtons[index].SetImage(newPreviews[choice.Name])
+			choices[index].Preview = newPreviews[choice.Name]
+		}
+		if appearanceImageView != nil {
+			_ = appearanceImageView.SetImage(newAppearance)
+		}
+		if refreshSwatches {
+			for index, choice := range backgroundChoices {
+				_ = colorButtons[index].SetImage(newSwatches[choice.Name])
+			}
+			disposePreviews(swatches)
+			swatches = newSwatches
+		}
+		disposePreviews(previews)
+		previews = newPreviews
+		appearancePreview.Dispose()
+		appearancePreview = newAppearance
+		return nil
+	}
+	updateBackgroundControls := func() {
+		custom := selectedBackgroundImage != ""
+		updateBackgroundButtons(colorButtons, backgroundChoices, appearance.BackgroundColor, custom)
+		updateModeButtons(modeButtons, appearance.BackgroundMode)
+		if imageWell != nil {
+			_ = imageWell.SetText(backgroundImageWellText(selectedBackgroundImage))
+		}
+		if backgroundSelectionLabel != nil {
+			backgroundSelectionLabel.SetText(backgroundSelectionText(appearance, selectedBackgroundImage, installed, backgroundChanged))
+		}
+	}
+	selectBackgroundColor := func(name string) {
+		appearance.BackgroundColor = name
+		appearance.BaseImage = ""
+		selectedBackgroundImage = ""
+		pendingBackgroundImage = ""
+		useColors = true
+		backgroundChanged = true
+		updateBackgroundControls()
+		if refreshErr := refreshAppearance(false); refreshErr != nil && window != nil {
+			walk.MsgBox(window, "Wallpaper Identity Setup", refreshErr.Error(), walk.MsgBoxIconError)
+		}
+	}
+	selectBackgroundMode := func(mode string) {
+		if appearance.BackgroundMode == mode {
+			return
+		}
+		appearance.BackgroundMode = mode
+		backgroundChanged = true
+		updateBackgroundControls()
+		if refreshErr := refreshAppearance(true); refreshErr != nil && window != nil {
+			walk.MsgBox(window, "Wallpaper Identity Setup", refreshErr.Error(), walk.MsgBoxIconError)
+		}
+	}
+	selectBackgroundImage := func(path string) {
+		absolute, pathErr := filepath.Abs(path)
+		if pathErr != nil {
+			walk.MsgBox(window, "Choose a background image", pathErr.Error(), walk.MsgBoxIconError)
+			return
+		}
+		probe := appearance
+		probe.BaseImage = absolute
+		if validateErr := config.ValidateAssets(probe); validateErr != nil {
+			walk.MsgBox(window, "Choose a background image", "Use a readable JPEG or PNG file.\n\n"+validateErr.Error(), walk.MsgBoxIconError)
+			return
+		}
+		appearance.BaseImage = absolute
+		selectedBackgroundImage = absolute
+		pendingBackgroundImage = absolute
+		useColors = false
+		backgroundChanged = true
+		updateBackgroundControls()
+		if refreshErr := refreshAppearance(false); refreshErr != nil {
+			walk.MsgBox(window, "Wallpaper Identity Setup", refreshErr.Error(), walk.MsgBoxIconError)
+		}
+	}
+	browseBackground := func() {
+		dialog := walk.FileDialog{
+			Title: "Choose a Wallpaper Identity background", Filter: "Image files (*.jpg;*.jpeg;*.png)|*.jpg;*.jpeg;*.png|All files (*.*)|*.*", FilterIndex: 1,
+		}
+		accepted, dialogErr := dialog.ShowOpen(window)
+		if dialogErr != nil {
+			walk.MsgBox(window, "Choose a background image", dialogErr.Error(), walk.MsgBoxIconError)
+			return
+		}
+		if accepted {
+			selectBackgroundImage(dialog.FilePath)
+		}
+	}
+	showPage := func(index int) {
+		page = index
+		if layoutPage != nil {
+			layoutPage.SetVisible(page == 0)
+			backgroundPage.SetVisible(page == 1)
+			backButton.SetEnabled(page == 1)
+			if page == 0 {
+				_ = advanceButton.SetText("Next")
+			} else {
+				_ = advanceButton.SetText(installText(installed))
+			}
+			_ = advanceButton.SetFocus()
+		}
 	}
 
 	err = (Dialog{
@@ -97,9 +280,9 @@ func Main() error {
 		Title:         "Wallpaper Identity Setup",
 		Icon:          appIcon,
 		FixedSize:     true,
-		Size:          Size{Width: 900, Height: 630},
+		Size:          Size{Width: 900, Height: 650},
 		Layout:        VBox{Margins: Margins{Left: 24, Top: 20, Right: 24, Bottom: 18}, Spacing: 10},
-		DefaultButton: &installButton,
+		DefaultButton: &advanceButton,
 		CancelButton:  &closeButton,
 		Children: []Widget{
 			Composite{Layout: HBox{Spacing: 12}, Children: []Widget{
@@ -109,29 +292,61 @@ func Main() error {
 					Label{Text: "See this machine's identity and health before anyone signs in", Font: Font{Family: "Segoe UI", PointSize: 11}},
 				}},
 			}},
-			GroupBox{
-				Title:  "Current status",
-				Layout: VBox{Margins: Margins{Left: 14, Top: 10, Right: 14, Bottom: 10}, Spacing: 3},
+			Composite{
+				AssignTo: &layoutPage,
+				Layout:   VBox{Spacing: 10},
 				Children: []Widget{
-					Label{AssignTo: &stateLabel, Text: state, Font: Font{Family: "Segoe UI Semibold", PointSize: 12}},
-					Label{AssignTo: &detailLabel, Text: detail, Font: Font{Family: "Segoe UI", PointSize: 9}},
+					GroupBox{
+						Title:  "Current status",
+						Layout: VBox{Margins: Margins{Left: 14, Top: 10, Right: 14, Bottom: 10}, Spacing: 3},
+						Children: []Widget{
+							Label{AssignTo: &stateLabel, Text: state, Font: Font{Family: "Segoe UI Semibold", PointSize: 12}},
+							Label{AssignTo: &detailLabel, Text: detail, Font: Font{Family: "Segoe UI", PointSize: 9}},
+						},
+					},
+					GroupBox{
+						Title:  "1 of 2 — Choose what to show",
+						Layout: VBox{Margins: Margins{Left: 12, Top: 10, Right: 12, Bottom: 10}, Spacing: 8},
+						Children: []Widget{
+							Label{Text: "Click a preview to select its information mix. Hostname and Generated at are always included.", Font: Font{Family: "Segoe UI", PointSize: 9}},
+							Composite{Layout: HBox{Spacing: 12}, Children: presetPreviewWidgets(choices, presetButtons, selectedPreset, selectPreset)},
+							Label{AssignTo: &selectionLabel, Text: presetSelectionText(choices, selectedPreset, installed, presetChanged), Font: Font{Family: "Segoe UI Semibold", PointSize: 9}},
+							Label{Text: "Power users can tune every field later in " + paths.ConfigFile(), Font: Font{Family: "Segoe UI", PointSize: 8}},
+						},
+					},
 				},
 			},
-			GroupBox{
-				Title:  "Choose what to show",
-				Layout: VBox{Margins: Margins{Left: 12, Top: 10, Right: 12, Bottom: 10}, Spacing: 8},
+			Composite{
+				AssignTo: &backgroundPage,
+				Visible:  false,
+				Layout:   VBox{Spacing: 10},
 				Children: []Widget{
-					Label{Text: "Click a preview to select its information mix. Hostname and Generated at are always included.", Font: Font{Family: "Segoe UI", PointSize: 9}},
-					Composite{Layout: HBox{Spacing: 12}, Children: presetPreviewWidgets(choices, presetButtons, selectedPreset, selectPreset)},
-					Label{AssignTo: &selectionLabel, Text: presetSelectionText(choices, selectedPreset, installed, presetChanged), Font: Font{Family: "Segoe UI Semibold", PointSize: 9}},
-					Label{Text: "Power users can tune every field later in " + paths.ConfigFile(), Font: Font{Family: "Segoe UI", PointSize: 8}},
+					GroupBox{
+						Title:  "2 of 2 — Choose the background",
+						Layout: VBox{Margins: Margins{Left: 14, Top: 12, Right: 14, Bottom: 12}, Spacing: 10},
+						Children: []Widget{
+							Label{Text: "Use one of twelve restrained server-ready color variants, or supply your own image.", Font: Font{Family: "Segoe UI", PointSize: 9}},
+							Composite{Layout: HBox{Spacing: 18}, Children: []Widget{
+								ImageView{AssignTo: &appearanceImageView, Image: appearancePreview, Mode: ImageViewModeShrink, MinSize: Size{Width: appearancePreviewWidth, Height: appearancePreviewHeight}, MaxSize: Size{Width: appearancePreviewWidth, Height: appearancePreviewHeight}},
+								Composite{Layout: VBox{Spacing: 8}, MinSize: Size{Width: 325}, Children: []Widget{
+									Label{Text: "Base color", Font: Font{Family: "Segoe UI Semibold", PointSize: 9}},
+									Composite{Layout: Grid{Columns: 3, Spacing: 6}, Children: backgroundColorWidgets(backgroundChoices, colorButtons, swatches, appearance.BackgroundColor, selectedBackgroundImage != "", selectBackgroundColor)},
+									Composite{Layout: HBox{Spacing: 6}, Children: []Widget{
+										Label{Text: "Appearance:", Font: Font{Family: "Segoe UI Semibold", PointSize: 9}},
+										PushButton{AssignTo: &modeButtons[0], Text: backgroundModeButtonText(config.BackgroundDark, appearance.BackgroundMode), MinSize: Size{Width: 86}, OnClicked: func() { selectBackgroundMode(config.BackgroundDark) }},
+										PushButton{AssignTo: &modeButtons[1], Text: backgroundModeButtonText(config.BackgroundLight, appearance.BackgroundMode), MinSize: Size{Width: 86}, OnClicked: func() { selectBackgroundMode(config.BackgroundLight) }},
+									}},
+									PushButton{AssignTo: &imageWell, Text: backgroundImageWellText(selectedBackgroundImage), MinSize: Size{Width: 320, Height: 52}, ToolTipText: "Drop one JPEG or PNG here, or click to open the file browser.", OnClicked: browseBackground},
+									Label{AssignTo: &backgroundSelectionLabel, Text: backgroundSelectionText(appearance, selectedBackgroundImage, installed, backgroundChanged), Font: Font{Family: "Segoe UI Semibold", PointSize: 8}},
+								}},
+							}},
+							Label{Text: "Future changes: replace background.jpg or background.png in " + paths.DataDir() + ".", Font: Font{Family: "Segoe UI", PointSize: 8}},
+						},
+					},
+					Label{Text: "A small LocalSystem service updates the image at boot, after session changes, and every five minutes.", Font: Font{Family: "Segoe UI", PointSize: 9}},
+					Label{Text: platformNote, Font: Font{Family: "Segoe UI", PointSize: 8}},
 				},
 			},
-			Label{
-				Text: "A small LocalSystem service updates the image at boot, after session changes, and every five minutes.",
-				Font: Font{Family: "Segoe UI", PointSize: 9},
-			},
-			Label{Text: platformNote, Font: Font{Family: "Segoe UI", PointSize: 8}},
 			VSpacer{},
 			HSeparator{},
 			Composite{
@@ -141,7 +356,8 @@ func Main() error {
 					HSpacer{},
 					PushButton{AssignTo: &uninstallButton, Text: "Uninstall", Enabled: installed && !legacyInstalled, MinSize: Size{Width: 96}},
 					PushButton{AssignTo: &closeButton, Text: "Close", MinSize: Size{Width: 96}, OnClicked: func() { window.Cancel() }},
-					PushButton{AssignTo: &installButton, Text: installText(installed), MinSize: Size{Width: 120}},
+					PushButton{AssignTo: &backButton, Text: "Back", Enabled: false, MinSize: Size{Width: 96}, OnClicked: func() { showPage(0) }},
+					PushButton{AssignTo: &advanceButton, Text: "Next", MinSize: Size{Width: 120}},
 				},
 			},
 		},
@@ -149,7 +365,15 @@ func Main() error {
 	if err != nil {
 		return err
 	}
-	_ = installButton.SetFocus()
+	_ = advanceButton.SetFocus()
+	updateBackgroundControls()
+	imageWell.DropFiles().Attach(func(files []string) {
+		if len(files) != 1 {
+			walk.MsgBox(window, "Choose a background image", "Drop exactly one JPEG or PNG file.", walk.MsgBoxIconWarning)
+			return
+		}
+		selectBackgroundImage(files[0])
+	})
 	window.Closing().Attach(func(canceled *bool, _ walk.CloseReason) {
 		if working {
 			*canceled = true
@@ -168,8 +392,23 @@ func Main() error {
 			preset = choices[index].Name
 		}
 		args := []string{"--install"}
+		installOptions := setup.InstallOptions{Preset: preset}
 		if preset != "" {
 			args = append(args, "--preset", preset)
+		}
+		applyBackground := !uninstall && backgroundChanged
+		if applyBackground {
+			installOptions.BackgroundColor = appearance.BackgroundColor
+			installOptions.BackgroundMode = appearance.BackgroundMode
+			installOptions.BackgroundImage = pendingBackgroundImage
+			installOptions.UseColors = useColors
+			args = append(args, "--background-color", appearance.BackgroundColor, "--background-mode", appearance.BackgroundMode)
+			if pendingBackgroundImage != "" {
+				args = append(args, "--background-image", pendingBackgroundImage)
+			}
+			if useColors {
+				args = append(args, "--use-colors")
+			}
 		}
 		if uninstall {
 			args = []string{"--uninstall"}
@@ -182,10 +421,12 @@ func Main() error {
 			window.Cancel()
 			return
 		}
-		installButton.SetEnabled(false)
+		advanceButton.SetEnabled(false)
+		backButton.SetEnabled(false)
 		uninstallButton.SetEnabled(false)
 		closeButton.SetEnabled(false)
 		setPresetButtonsEnabled(presetButtons, false)
+		setBackgroundButtonsEnabled(colorButtons, modeButtons, imageWell, false)
 		working = true
 		stateLabel.SetText("Working…")
 		detailLabel.SetText("Preparing the requested change.")
@@ -197,17 +438,19 @@ func Main() error {
 			if uninstall {
 				opErr = setup.Uninstall(progress, false)
 			} else {
-				opErr = setup.InstallWithPreset(progress, preset)
+				opErr = setup.InstallWithOptions(progress, installOptions)
 			}
 			window.Synchronize(func() {
 				working = false
 				installedNow := setup.IsInstalled()
 				installed = installedNow
-				installButton.SetText(installText(installedNow))
-				installButton.SetEnabled(true)
+				advanceButton.SetText(installText(installedNow))
+				advanceButton.SetEnabled(true)
+				backButton.SetEnabled(page == 1)
 				uninstallButton.SetEnabled(installedNow && !setup.IsLegacyInstalled())
 				closeButton.SetEnabled(true)
 				setPresetButtonsEnabled(presetButtons, true)
+				setBackgroundButtonsEnabled(colorButtons, modeButtons, imageWell, true)
 				if opErr != nil {
 					presetChanged = applyPreset && installedNow
 					stateLabel.SetText("The operation could not be completed")
@@ -216,15 +459,32 @@ func Main() error {
 					walk.MsgBox(window, "Wallpaper Identity Setup", opErr.Error(), walk.MsgBoxIconError)
 				} else {
 					presetChanged = false
+					backgroundChanged = false
+					useColors = false
+					pendingBackgroundImage = ""
+					if current, loadErr := config.Load(paths.ConfigFile()); loadErr == nil {
+						appearance.BackgroundColor = current.BackgroundColor
+						appearance.BackgroundMode = current.BackgroundMode
+						selectedBackgroundImage = paths.ResolveBackgroundImage(current.BaseImage)
+						appearance.BaseImage = selectedBackgroundImage
+					}
 					newState, newDetail := installationSummary(installedNow, setup.IsLegacyInstalled())
 					stateLabel.SetText(newState)
 					detailLabel.SetText(newDetail)
 					selectionLabel.SetText(presetSelectionText(choices, selectedPreset, installedNow, presetChanged))
 				}
+				updateBackgroundControls()
+				showPage(page)
 			})
 		}()
 	}
-	installButton.Clicked().Attach(func() { run(false) })
+	advanceButton.Clicked().Attach(func() {
+		if page == 0 {
+			showPage(1)
+			return
+		}
+		run(false)
+	})
 	uninstallButton.Clicked().Attach(func() {
 		if walk.MsgBox(window, "Uninstall Wallpaper Identity", "Remove the W:ID service and its Windows lock-screen policy?\n\nGenerated images and configuration will be kept in "+paths.DataDir()+".", walk.MsgBoxYesNo|walk.MsgBoxIconQuestion) == walk.DlgCmdYes {
 			run(true)
@@ -254,6 +514,20 @@ func presetPreviewWidgets(choices []presetChoice, buttons []*walk.PushButton, se
 				},
 				Label{Text: choice.Description, Font: Font{Family: "Segoe UI", PointSize: 8}},
 			},
+		})
+	}
+	return widgets
+}
+
+func backgroundColorWidgets(choices []backgroundChoice, buttons []*walk.PushButton, swatches map[string]walk.Image, selected string, customImage bool, selectColor func(string)) []Widget {
+	widgets := make([]Widget, 0, len(choices))
+	for index, choice := range choices {
+		index := index
+		choice := choice
+		widgets = append(widgets, PushButton{
+			AssignTo: &buttons[index], Text: backgroundButtonText(choice, !customImage && choice.Name == selected),
+			Image: swatches[choice.Name], ImageAboveText: true, MinSize: Size{Width: 100, Height: 52},
+			ToolTipText: "Use the " + choice.Title + " color family", OnClicked: func() { selectColor(choice.Name) },
 		})
 	}
 	return widgets
@@ -295,6 +569,30 @@ func presetIndex(choices []presetChoice, name string) int {
 	return -1
 }
 
+func presetIndexByName(name string) int {
+	switch name {
+	case config.PresetIdentity:
+		return 0
+	case config.PresetBalanced:
+		return 1
+	case config.PresetOperations:
+		return 2
+	default:
+		return -1
+	}
+}
+
+func selectedPresetName(index int) string {
+	switch index {
+	case 0:
+		return config.PresetIdentity
+	case 2:
+		return config.PresetOperations
+	default:
+		return config.PresetBalanced
+	}
+}
+
 func updatePresetButtons(buttons []*walk.PushButton, choices []presetChoice, selected int) {
 	for index, button := range buttons {
 		if button != nil {
@@ -308,6 +606,84 @@ func setPresetButtonsEnabled(buttons []*walk.PushButton, enabled bool) {
 		if button != nil {
 			button.SetEnabled(enabled)
 		}
+	}
+}
+
+func backgroundButtonText(choice backgroundChoice, selected bool) string {
+	if selected {
+		return "✓  " + choice.Title
+	}
+	return choice.Title
+}
+
+func backgroundModeButtonText(mode, selected string) string {
+	title := strings.ToUpper(mode[:1]) + mode[1:]
+	if mode == selected {
+		return "✓  " + title
+	}
+	return title
+}
+
+func backgroundTitle(name string) string {
+	for _, choice := range backgroundChoices {
+		if choice.Name == name {
+			return choice.Title
+		}
+	}
+	return "Azure"
+}
+
+func backgroundSelectionText(appearance config.Config, imagePath string, installed, changed bool) string {
+	prefix := "Selected"
+	if installed && changed {
+		prefix = "Selected for update"
+	} else if installed {
+		prefix = "Current background"
+	}
+	mode := strings.ToUpper(appearance.BackgroundMode[:1]) + appearance.BackgroundMode[1:]
+	if imagePath != "" {
+		return fmt.Sprintf("%s: Custom image · %s appearance", prefix, mode)
+	}
+	return fmt.Sprintf("%s: %s · %s", prefix, backgroundTitle(appearance.BackgroundColor), mode)
+}
+
+func backgroundImageWellText(path string) string {
+	if path == "" {
+		return "Drop a JPEG / PNG here, or click to browse…"
+	}
+	name := filepath.Base(path)
+	if len([]rune(name)) > 30 {
+		runes := []rune(name)
+		name = string(runes[:29]) + "…"
+	}
+	return "✓  Custom image: " + name
+}
+
+func updateBackgroundButtons(buttons []*walk.PushButton, choices []backgroundChoice, selected string, customImage bool) {
+	for index, button := range buttons {
+		if button != nil {
+			_ = button.SetText(backgroundButtonText(choices[index], !customImage && choices[index].Name == selected))
+		}
+	}
+}
+
+func updateModeButtons(buttons []*walk.PushButton, selected string) {
+	modes := []string{config.BackgroundDark, config.BackgroundLight}
+	for index, button := range buttons {
+		if button != nil {
+			_ = button.SetText(backgroundModeButtonText(modes[index], selected))
+		}
+	}
+}
+
+func setBackgroundButtonsEnabled(colors, modes []*walk.PushButton, imageWell *walk.PushButton, enabled bool) {
+	for _, button := range append(colors, modes...) {
+		if button != nil {
+			button.SetEnabled(enabled)
+		}
+	}
+	if imageWell != nil {
+		imageWell.SetEnabled(enabled)
 	}
 }
 
@@ -325,7 +701,7 @@ func centerInWorkArea(window walk.Window) {
 	_ = window.SetBounds(bounds)
 }
 
-func createPresetPreviews() (map[string]walk.Image, error) {
+func createPresetPreviews(appearance config.Config) (map[string]walk.Image, error) {
 	dpi := primaryScreenDPI()
 	pixelWidth, pixelHeight := presetPreviewPixelSize(dpi)
 	snapshot := sysinfo.Snapshot{
@@ -342,6 +718,9 @@ func createPresetPreviews() (map[string]walk.Image, error) {
 	result := make(map[string]walk.Image, 3)
 	for _, name := range []string{config.PresetIdentity, config.PresetBalanced, config.PresetOperations} {
 		cfg, _ := config.ForPreset(name)
+		cfg.BackgroundColor = appearance.BackgroundColor
+		cfg.BackgroundMode = appearance.BackgroundMode
+		cfg.BaseImage = appearance.BaseImage
 		cfg.Width, cfg.Height = 1280, 720
 		img, err := overlay.Render(snapshot, cfg)
 		if err != nil {
@@ -358,6 +737,65 @@ func createPresetPreviews() (map[string]walk.Image, error) {
 		result[name] = preview
 	}
 	return result, nil
+}
+
+func createAppearancePreview(appearance config.Config, preset string) (walk.Image, error) {
+	dpi := primaryScreenDPI()
+	pixelWidth := walk.IntFrom96DPI(appearancePreviewWidth, dpi)
+	pixelHeight := walk.IntFrom96DPI(appearancePreviewHeight, dpi)
+	cfg, err := config.ForPreset(preset)
+	if err != nil {
+		cfg, _ = config.ForPreset(config.PresetBalanced)
+	}
+	cfg.BackgroundColor = appearance.BackgroundColor
+	cfg.BackgroundMode = appearance.BackgroundMode
+	cfg.BaseImage = appearance.BaseImage
+	cfg.Width, cfg.Height = 1280, 720
+	snapshot := previewSnapshot()
+	img, err := overlay.Render(snapshot, cfg)
+	if err != nil {
+		return nil, err
+	}
+	thumbnail := image.NewRGBA(image.Rect(0, 0, pixelWidth, pixelHeight))
+	draw.CatmullRom.Scale(thumbnail, thumbnail.Bounds(), img, img.Bounds(), draw.Over, nil)
+	return walk.NewBitmapFromImageForDPI(thumbnail, dpi)
+}
+
+func createBackgroundSwatches(mode string) (map[string]walk.Image, error) {
+	dpi := primaryScreenDPI()
+	pixelWidth := walk.IntFrom96DPI(colorSwatchWidth, dpi)
+	pixelHeight := walk.IntFrom96DPI(colorSwatchHeight, dpi)
+	result := make(map[string]walk.Image, len(backgroundChoices))
+	for _, choice := range backgroundChoices {
+		cfg := config.Default()
+		cfg.BackgroundColor, cfg.BackgroundMode = choice.Name, mode
+		img, err := overlay.BackgroundPreview(cfg, pixelWidth, pixelHeight)
+		if err != nil {
+			disposePreviews(result)
+			return nil, err
+		}
+		bitmap, err := walk.NewBitmapFromImageForDPI(img, dpi)
+		if err != nil {
+			disposePreviews(result)
+			return nil, err
+		}
+		result[choice.Name] = bitmap
+	}
+	return result, nil
+}
+
+func previewSnapshot() sysinfo.Snapshot {
+	return sysinfo.Snapshot{
+		Hostname: "LAB-RACK-07", OS: "Windows Server 2025 Datacenter", Edition: "Server", Version: "24H2", Build: "26100.6584",
+		CPU: "Intel Xeon · 8 logical", GPU: "Remote display adapter", Memory: "3.2 / 8.0 GiB · 40%", Disk: "22.4 / 64.0 GiB · 35%",
+		IPs: []string{"10.0.2.15"}, Serial: "RACK07-2026", Uptime: "2d 4h 12m", ServicesRunning: 124, ServicesTotal: 132,
+		CriticalServices: []sysinfo.ServiceState{
+			{Name: "Defender", Running: true}, {Name: "DHCP", Running: true},
+			{Name: "DNS Client", Running: true}, {Name: "Event Log", Running: true},
+		},
+		FailedAutoServices: []string{"ExampleSvc"}, PendingReboot: true,
+		DisplayWidth: 1280, DisplayHeight: 720, RefreshedAt: time.Now(),
+	}
 }
 
 func primaryScreenDPI() int {
@@ -465,7 +903,7 @@ func operationCompletionText(result error) (string, string) {
 
 func installationSummary(installed, legacyInstalled bool) (string, string) {
 	if !installed {
-		return "Not installed", "Choose a starting layout, then select Install."
+		return "Not installed", "Choose what to show and a background, then select Install."
 	}
 	if legacyInstalled {
 		return "Previous version detected", "Repair / Upgrade will migrate its service, configuration, generated images, and policy backups to Wallpaper Identity."

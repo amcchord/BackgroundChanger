@@ -21,21 +21,21 @@ This is the real Windows 11 Pro pre-login screen from the v4.0.2 validation gues
 
 Hostname and a timezone-qualified **Generated at** timestamp are permanent parts of every W:ID layout, including custom configurations, so stale output is immediately obvious.
 
-The layout reserves Windows 11's top-center clock area and Windows 10's lower-left clock area. The installer also enables Microsoft's **Show clear logon background** policy so the information remains readable on the credential screen.
+The renderer measures and fits every machine-supplied value, uses the detected display dimensions when they are credible, and selects a safe 4:3, 16:10, 16:9, ultrawide, or portrait fallback from the reported aspect ratio otherwise. The layout reserves Windows 11's top-center clock area and Windows 10's lower-left clock area. The installer also enables Microsoft's **Show clear logon background** policy so the information remains readable on the credential screen.
 
 ## Install
 
 1. Download `WallpaperIdentitySetup.exe` from the [latest release](https://github.com/amcchord/WallpaperIdentity/releases/latest).
-2. Open it, choose a starting layout, and select **Install**.
+2. Open it, choose what to show, select a background, and select **Install**.
 3. Approve the Windows administrator prompt.
 
-The W:ID installer is self-contained and works offline. Click anywhere on a full-size rendered preview for **Identity**, **Balanced**, or **Operations** to select it; **Install** stays in the standard lower-right position. Setup then installs one automatic LocalSystem service and immediately generates the first background. Its blocking progress window finishes at 100% with an explicit **Done** state.
+The W:ID installer is self-contained and works offline. Its two short pages keep the advancing action in the standard lower-right position. First, click anywhere on a full-size rendered preview for **Identity**, **Balanced**, or **Operations**. Then choose one of six server-ready colors in Dark or Light mode, or drop/browse to a JPEG or PNG and confirm it in the live preview. Setup installs one automatic LocalSystem service and immediately generates the first background. Its blocking progress window finishes at 100% with an explicit **Done** state.
 
 For unattended deployment, the companion `WallpaperIdentityCLI.exe` provides strict, blocking `install`, `repair`, `upgrade`, `status`, `refresh`, `render`, and `uninstall` commands with JSON/result-file output and stable exit codes. See the [headless and RMM guide](docs/CLI.md).
 
-![Wallpaper Identity clean-install window with three clickable layout previews and Install in the lower right](assets/screenshots/installer.png)
+![Wallpaper Identity clean-install layout page with three full-size clickable previews and Next in the lower right](assets/screenshots/installer-layout.jpg)
 
-![Wallpaper Identity installer with the full Operations preview selected](assets/screenshots/installer-selection.png)
+![Wallpaper Identity background page with six color families, Dark and Light modes, custom-image drop target, and live preview](assets/screenshots/installer-backgrounds.jpg)
 
 ![Wallpaper Identity progress window at its final Done state](assets/screenshots/installer-done.png)
 
@@ -79,6 +79,7 @@ Wallpaper Identity creates:
 ```text
 C:\Program Files\Wallpaper Identity\WallpaperIdentity.exe
 C:\ProgramData\Wallpaper Identity\config.yml
+C:\ProgramData\Wallpaper Identity\background.jpg or background.png
 C:\ProgramData\Wallpaper Identity\status.json
 C:\ProgramData\Wallpaper Identity\pre-login-refresh.json
 C:\ProgramData\Wallpaper Identity\WallpaperIdentity.log
@@ -91,7 +92,9 @@ C:\ProgramData\Wallpaper Identity\backgrounds\
 | **Balanced** | Everyday machine status | Identity plus CPU/GPU, memory, disk, uptime, service count, restart state, critical services |
 | **Operations** | Troubleshooting and fleet health | Resources, service/restart state, and failed automatic services |
 
-`config.yml` exposes every field as a readable Boolean. Set `preset: custom` before changing individual `show` values; changing `preset` to a named value applies that complete preset. You can also tune `refresh_minutes`, opt out of the guarded boot login-screen rotation, control the documented Pro compatibility switch, use a local JPEG/PNG with `base_image`, or force both `width` and `height`. Hostname and **Generated at** cannot be hidden.
+`config.yml` exposes every field as readable YAML. Set `preset: custom` before changing individual `show` values; changing `preset` to a named value applies that complete preset. Choose `background_color: blue`, `teal`, `green`, `purple`, `slate`, or `copper` with `background_mode: dark` or `light`. For a centrally managed image, use an absolute JPEG/PNG path in `base_image`. For simple local maintenance, leave `base_image` empty and replace `background.jpg` or `background.png` beside `config.yml`; the service discovers it on the next refresh without rerunning setup. You can also tune `refresh_minutes`, opt out of the guarded boot login-screen rotation, control the documented Pro compatibility switch, or force both `width` and `height`. Hostname and **Generated at** cannot be hidden.
+
+![Responsive W:ID layouts at 4:3, ultrawide, 5:4, and portrait resolutions with deliberately long machine values](assets/screenshots/responsive-layouts.jpg)
 
 Start from [config.example.yml](config.example.yml) and see [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the complete annotated reference. Display changes are read on the next refresh; restart the service after changing `refresh_minutes`.
 
@@ -101,6 +104,8 @@ Synchronous maintenance and automation commands, run from an elevated shell besi
 & .\WallpaperIdentityCLI.exe status --json
 & .\WallpaperIdentityCLI.exe refresh --json
 & .\WallpaperIdentityCLI.exe render --output C:\Temp\preview.jpg
+& .\WallpaperIdentityCLI.exe repair --quiet --background-color teal --background-mode dark --use-colors
+& .\WallpaperIdentityCLI.exe repair --quiet --background-image C:\RMM\server-room.png --background-mode light
 & .\WallpaperIdentityCLI.exe repair --quiet
 & .\WallpaperIdentityCLI.exe uninstall --quiet
 ```
@@ -111,7 +116,7 @@ Requirements: Windows and Go 1.24 or newer.
 
 ```powershell
 go test ./...
-powershell -ExecutionPolicy Bypass -File .\build.ps1 -Version v4.5.0
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -Version v4.7.0
 ```
 
 Release output is written to `dist\WallpaperIdentitySetup.exe`, `dist\WallpaperIdentityCLI.exe`, and `dist\SHA256SUMS.txt`. Both offline binaries contain the service, renderer, fonts, W:ID icon, and Windows manifest; Setup uses the graphical Windows subsystem while CLI uses the console subsystem for reliable RMM waiting, stdout, and exit codes.

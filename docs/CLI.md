@@ -15,6 +15,12 @@ Run deployment commands as an elevated administrator or LocalSystem. LocalSystem
 # Validate and deploy a centrally managed power-user configuration
 & .\WallpaperIdentityCLI.exe install --json --config 'C:\RMM\wid-config.yml'
 
+# Select one of the twelve built-in color variants and remove a standard image
+& .\WallpaperIdentityCLI.exe repair --quiet --background-color teal --background-mode dark --use-colors
+
+# Validate and copy a fleet image to the stable ProgramData path
+& .\WallpaperIdentityCLI.exe repair --quiet --background-image 'C:\RMM\server-room.png' --background-mode light
+
 # Idempotent repair or v3-to-v4 upgrade without replacing config.yml
 & .\WallpaperIdentityCLI.exe repair --quiet --result-file 'C:\RMM\wid-result.json'
 
@@ -31,7 +37,7 @@ Run deployment commands as an elevated administrator or LocalSystem. LocalSystem
 & .\WallpaperIdentityCLI.exe uninstall --headless --remove-data
 ```
 
-`install`, `repair`, and `upgrade` share the same safe implementation. With no configuration option, an existing or migrated `config.yml` is retained; a clean install receives Balanced. An explicit `--preset` or `--config` intentionally replaces the active configuration. The supplied YAML is fully validated before the service, registry, policy, or filesystem installation state is changed.
+`install`, `repair`, and `upgrade` share the same safe implementation. With no configuration option, an existing or migrated `config.yml` is retained; a clean install receives Balanced. An explicit `--preset` replaces the information mix while preserving independent background, timing, compatibility, and sizing settings; `--config` replaces the complete active configuration. `--background-image` validates and copies a JPEG/PNG to the standard ProgramData path. `--background-color` and `--background-mode` select one of twelve built-in variants; add `--use-colors` to remove the standard image. A supplied YAML or image is fully validated before the service, registry, policy, or filesystem installation state is changed. `--config` is mutually exclusive with preset and background options, and `--background-image` is mutually exclusive with `--use-colors`.
 
 Only one install, repair, upgrade, or uninstall can run at once. A second process exits with `1618` instead of racing service and policy changes.
 
@@ -57,7 +63,7 @@ Example result:
   "reboot_required": false,
   "success": true,
   "exit_code": 0,
-  "version": "v4.5.0",
+  "version": "v4.7.0",
   "commit": "abc1234",
   "installed": true,
   "legacy_installed": false,
@@ -74,9 +80,9 @@ On failure, `success` is false and `error` contains a stable code plus an action
 ## Command reference
 
 ```text
-install [--preset NAME | --config PATH] [output options]
-repair  [--preset NAME | --config PATH] [output options]
-upgrade [--preset NAME | --config PATH] [output options]
+install [--preset NAME | --config PATH] [background options] [output options]
+repair  [--preset NAME | --config PATH] [background options] [output options]
+upgrade [--preset NAME | --config PATH] [background options] [output options]
 uninstall [--remove-data] [output options]
 status [--json] [--result-file PATH]
 refresh [--json] [--result-file PATH]
@@ -87,7 +93,7 @@ help
 
 `status` verifies that the service is running, the last render succeeded, Windows confirmed an edition-appropriate policy path, and the timestamp is no older than twice `refresh_minutes` plus one minute. A registry write alone is not treated as success on Pro: status requires verified `SetEduPolicies` plus Personalization CSP status `1` for the exact generated file. During boot, the later `boot-settled` status also records the guarded `pre_login_session_refresh` result; `pre-login-refresh.json` preserves the once-per-boot outcome after interval status records replace it. `status` reports the previous service as `legacy_installed` before an upgrade. `refresh` sends a dedicated service control and waits up to 90 seconds for a newer `reason: "cli"` status record produced by LocalSystem. Manual refresh updates policy but does not rotate the console; the guarded rotation is deliberately limited to the boot-settled path. `render` creates a preview only and never changes Windows policy.
 
-The previous `--install`, `--uninstall`, `--render`, `--refresh`, `--status`, and `--version` command aliases remain valid. Windows-style `/install`, `/uninstall`, `/quiet`, `/silent`, `/headless`, `/no-ui`, `/json`, `/result-file`, `/preset`, `/config`, `/output`, and `/remove-data` forms are also accepted. `/?` prints help.
+Background options are `--background-image PATH`, `--background-color NAME`, `--background-mode dark|light`, and `--use-colors`. The previous `--install`, `--uninstall`, `--render`, `--refresh`, `--status`, and `--version` command aliases remain valid. Windows-style `/install`, `/uninstall`, `/quiet`, `/silent`, `/headless`, `/no-ui`, `/json`, `/result-file`, `/preset`, `/config`, `/background-image`, `/background-color`, `/background-mode`, `/use-colors`, `/output`, and `/remove-data` forms are also accepted. `/?` prints help.
 
 ## Exit codes
 

@@ -31,9 +31,9 @@ The old identifiers remain only as explicit compatibility constants and ownershi
 
 ## Refresh sequence
 
-1. Load or create `C:\ProgramData\Wallpaper Identity\config.yml`, resolving the selected named preset or custom field visibility.
+1. Load or create `C:\ProgramData\Wallpaper Identity\config.yml`, resolving the selected named preset or custom field visibility. An explicit `base_image` wins; otherwise discover replaceable `background.jpg` or `background.png` beside the configuration.
 2. Gather machine facts from Windows registry, WMI, network interfaces, and system counters.
-3. Render a new resolution-aware JPEG with the W:ID logo, a unique timestamp in its filename, and a non-configurable, timezone-qualified **Generated at** label.
+3. Render a new resolution-aware JPEG with the W:ID logo, a unique timestamp in its filename, and a non-configurable, timezone-qualified **Generated at** label. Credible detected dimensions are used directly. Otherwise the reported aspect selects a 4:3, 16:10, 16:9, ultrawide, or portrait fallback. Standard/wide displays retain separate side panels; tall displays stack them. Every variable value is measured against its actual pixel width, reduced to a bounded readable font, and finally elided if necessary; vertical row metrics are fitted before drawing.
 4. Set `HKLM\Software\Policies\Microsoft\Windows\Personalization\LockScreenImage` and the related no-change/no-overlay values.
 5. Enable `HKLM\Software\Policies\Microsoft\Windows\System\DisableAcrylicBackgroundOnLogon`, the registry mapping for Microsoft's **Show clear logon background** policy.
 6. On Windows Pro, back up and enable only the `MDM_SharedPC.SetEduPolicies` compatibility switch required by Personalization CSP.

@@ -2,8 +2,11 @@ package ui
 
 import (
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/amcchord/WallpaperIdentity/v4/internal/config"
 )
 
 func TestLegacyInstallationSummaryOffersMigration(t *testing.T) {
@@ -93,5 +96,43 @@ func TestPresetPreviewPixelsFollowDisplayDPI(t *testing.T) {
 		if width != test.wantWidth || height != test.wantHeight {
 			t.Fatalf("DPI %d preview = %dx%d, want %dx%d", test.dpi, width, height, test.wantWidth, test.wantHeight)
 		}
+	}
+}
+
+func TestBackgroundSelectionCopyAndImageWell(t *testing.T) {
+	appearance := config.Default()
+	if got := backgroundSelectionText(appearance, "", false, false); got != "Selected: Azure · Dark" {
+		t.Fatalf("new color selection = %q", got)
+	}
+	appearance.BackgroundColor = config.BackgroundTeal
+	appearance.BackgroundMode = config.BackgroundLight
+	if got := backgroundSelectionText(appearance, `C:\Images\room.png`, true, true); got != "Selected for update: Custom image · Light appearance" {
+		t.Fatalf("custom selection = %q", got)
+	}
+	if got := backgroundImageWellText(""); !strings.Contains(got, "Drop a JPEG / PNG") {
+		t.Fatalf("empty image well = %q", got)
+	}
+	path := filepath.Join(`C:\Images`, strings.Repeat("very-long-", 5)+"room.png")
+	if got := backgroundImageWellText(path); !strings.HasPrefix(got, "✓  Custom image: ") || len([]rune(got)) > 50 {
+		t.Fatalf("selected image well = %q", got)
+	}
+}
+
+func TestBackgroundButtonsAndPresetNames(t *testing.T) {
+	choice := backgroundChoice{Name: config.BackgroundSlate, Title: "Slate"}
+	if got := backgroundButtonText(choice, true); got != "✓  Slate" {
+		t.Fatalf("selected background button = %q", got)
+	}
+	if got := backgroundModeButtonText(config.BackgroundLight, config.BackgroundDark); got != "Light" {
+		t.Fatalf("unselected mode = %q", got)
+	}
+	if got := backgroundModeButtonText(config.BackgroundDark, config.BackgroundDark); got != "✓  Dark" {
+		t.Fatalf("selected mode = %q", got)
+	}
+	if got := selectedPresetName(-1); got != config.PresetBalanced {
+		t.Fatalf("custom preview fallback = %q", got)
+	}
+	if got := presetIndexByName(config.PresetOperations); got != 2 {
+		t.Fatalf("operations preset index = %d", got)
 	}
 }

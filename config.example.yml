@@ -10,7 +10,13 @@ enable_pro_compatibility: true
 # Windows owns a boot-time bitmap cache. When no user is signed in, rotate the
 # empty console session once per boot so it reloads the newly generated image.
 refresh_login_screen_on_boot: true
+# Leave base_image empty to discover background.jpg or background.png beside
+# the installed config.yml. An absolute path remains useful for RMM-managed art.
 base_image: ""
+# Six color families × Dark/Light provide twelve built-in backdrops.
+background_color: blue
+background_mode: dark
+# Leave both at 0 for detected resolution plus aspect-aware fallbacks.
 width: 0
 height: 0
 show:

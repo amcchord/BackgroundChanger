@@ -1,6 +1,7 @@
 package paths
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -20,5 +21,26 @@ func TestBrandedPathsAndLegacyMigrationPaths(t *testing.T) {
 	}
 	if ShortName != "W:ID" {
 		t.Fatalf("ShortName = %q", ShortName)
+	}
+}
+
+func TestResolveBackgroundImageUsesDocumentedStandardFiles(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ProgramData", dir)
+	if got := ResolveBackgroundImage(""); got != "" {
+		t.Fatalf("empty lookup = %q", got)
+	}
+	if err := os.MkdirAll(DataDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(StandardBackgroundPNG(), []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := ResolveBackgroundImage(""); got != StandardBackgroundPNG() {
+		t.Fatalf("PNG lookup = %q, want %q", got, StandardBackgroundPNG())
+	}
+	explicit := filepath.Join(dir, "managed.jpg")
+	if got := ResolveBackgroundImage(explicit); got != explicit {
+		t.Fatalf("explicit lookup = %q", got)
 	}
 }

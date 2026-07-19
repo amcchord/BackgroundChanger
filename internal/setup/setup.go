@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"io"
 	"os"
 	"os/exec"
@@ -29,8 +30,12 @@ type ProgressFunc func(percent int, message string)
 var ErrSetupRunning = errors.New("another Wallpaper Identity setup operation is already running")
 
 type InstallOptions struct {
-	Preset     string
-	ConfigFile string
+	Preset          string
+	ConfigFile      string
+	BackgroundImage string
+	BackgroundColor string
+	BackgroundMode  string
+	UseColors       bool
 }
 
 // OperationResult reports setup work that an unattended caller may need to
@@ -52,7 +57,7 @@ func InstallWithPreset(progress ProgressFunc, preset string) error {
 
 // InstallWithOptions performs a clean install, repair, or in-place upgrade.
 // ConfigFile is validated before any installation state is changed and is
-// mutually exclusive with Preset.
+// mutually exclusive with preset and background options.
 func InstallWithOptions(progress ProgressFunc, options InstallOptions) error {
 	_, err := InstallWithOptionsResult(progress, options)
 	return err
@@ -66,8 +71,11 @@ func InstallWithOptionsResult(progress ProgressFunc, options InstallOptions) (Op
 	if !IsAdministrator() {
 		return result, errors.New("administrator privileges are required")
 	}
-	if options.Preset != "" && options.ConfigFile != "" {
-		return result, errors.New("preset and config file are mutually exclusive")
+	if options.ConfigFile != "" && (options.Preset != "" || options.BackgroundImage != "" || options.BackgroundColor != "" || options.BackgroundMode != "" || options.UseColors) {
+		return result, errors.New("config file cannot be combined with preset or background options")
+	}
+	if options.BackgroundImage != "" && options.UseColors {
+		return result, errors.New("background image and use-colors are mutually exclusive")
 	}
 	var suppliedConfig *config.Config
 	if options.ConfigFile != "" {
@@ -79,6 +87,25 @@ func InstallWithOptionsResult(progress ProgressFunc, options InstallOptions) (Op
 			return result, fmt.Errorf("validate supplied configuration assets: %w", err)
 		}
 		suppliedConfig = &cfg
+	}
+	if options.BackgroundImage != "" {
+		probe := config.Default()
+		probe.BaseImage = options.BackgroundImage
+		if err := config.ValidateAssets(probe); err != nil {
+			return result, fmt.Errorf("validate background image: %w", err)
+		}
+	}
+	if options.BackgroundColor != "" || options.BackgroundMode != "" {
+		probe := config.Default()
+		if options.BackgroundColor != "" {
+			probe.BackgroundColor = options.BackgroundColor
+		}
+		if options.BackgroundMode != "" {
+			probe.BackgroundMode = options.BackgroundMode
+		}
+		if err := probe.Validate(); err != nil {
+			return result, fmt.Errorf("validate background appearance: %w", err)
+		}
 	}
 	release, err := acquireSetupLock()
 	if err != nil {
@@ -101,29 +128,57 @@ func InstallWithOptionsResult(progress ProgressFunc, options InstallOptions) (Op
 	if err := loginscreen.BackupPolicies(paths.PolicyBackupFile()); err != nil {
 		return result, fmt.Errorf("back up existing lock-screen policy: %w", err)
 	}
+	var activeConfig config.Config
 	if suppliedConfig != nil {
-		if err := config.Save(paths.ConfigFile(), *suppliedConfig); err != nil {
-			return result, fmt.Errorf("write supplied configuration: %w", err)
-		}
+		activeConfig = *suppliedConfig
 	} else if options.Preset != "" {
-		cfg, err := config.ForPreset(options.Preset)
+		if existing, loadErr := config.Load(paths.ConfigFile()); loadErr == nil {
+			activeConfig, err = config.ApplyPreset(existing, options.Preset)
+		} else {
+			activeConfig, err = config.ForPreset(options.Preset)
+		}
 		if err != nil {
 			return result, err
 		}
-		if err := config.Save(paths.ConfigFile(), cfg); err != nil {
-			return result, fmt.Errorf("write preset configuration: %w", err)
-		}
 	} else {
-		cfg, err := config.LoadOrCreate(paths.ConfigFile())
+		activeConfig, err = config.LoadOrCreate(paths.ConfigFile())
 		if err != nil {
 			return result, fmt.Errorf("create configuration: %w", err)
 		}
-		cfg.BaseImage = migrateLegacyDataPath(cfg.BaseImage)
-		// Saving an imported v3 file preserves its values while updating the
-		// comments and schema presentation to the Wallpaper Identity brand.
-		if err := config.Save(paths.ConfigFile(), cfg); err != nil {
-			return result, fmt.Errorf("normalize configuration: %w", err)
+		activeConfig.BaseImage = migrateLegacyDataPath(activeConfig.BaseImage)
+	}
+	if options.BackgroundColor != "" {
+		activeConfig.BackgroundColor = options.BackgroundColor
+	}
+	if options.BackgroundMode != "" {
+		activeConfig.BackgroundMode = options.BackgroundMode
+	}
+	var backgroundBackup *standardBackgroundBackup
+	if options.UseColors || options.BackgroundImage != "" {
+		backgroundBackup, err = backupStandardBackgrounds()
+		if err != nil {
+			return result, fmt.Errorf("back up the current custom background: %w", err)
 		}
+	}
+	if options.UseColors {
+		activeConfig.BaseImage = ""
+		if err := removeStandardBackgrounds(); err != nil {
+			return result, rollbackBackgroundChange(backgroundBackup, fmt.Errorf("remove the custom background: %w", err))
+		}
+	}
+	if options.BackgroundImage != "" {
+		if _, err := installStandardBackground(options.BackgroundImage); err != nil {
+			return result, rollbackBackgroundChange(backgroundBackup, fmt.Errorf("install background image: %w", err))
+		}
+		activeConfig.BaseImage = ""
+	}
+	// Saving an imported file preserves its values while updating the comments
+	// and schema presentation to the current Wallpaper Identity release.
+	if err := config.Save(paths.ConfigFile(), activeConfig); err != nil {
+		return result, rollbackBackgroundChange(backgroundBackup, fmt.Errorf("write configuration: %w", err))
+	}
+	if backgroundBackup != nil {
+		backgroundBackup.cleanup()
 	}
 
 	progress(15, "Removing earlier installation services…")
@@ -823,6 +878,127 @@ func removeFileIfExists(path string) error {
 		return nil
 	}
 	return err
+}
+
+func installStandardBackground(source string) (string, error) {
+	file, err := os.Open(source)
+	if err != nil {
+		return "", err
+	}
+	_, format, decodeErr := image.DecodeConfig(file)
+	closeErr := file.Close()
+	if decodeErr != nil {
+		return "", decodeErr
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	var destination, obsolete string
+	switch format {
+	case "jpeg":
+		destination, obsolete = paths.StandardBackgroundJPEG(), paths.StandardBackgroundPNG()
+	case "png":
+		destination, obsolete = paths.StandardBackgroundPNG(), paths.StandardBackgroundJPEG()
+	default:
+		return "", fmt.Errorf("background must be a JPEG or PNG, got %s", format)
+	}
+	if err := os.MkdirAll(paths.DataDir(), 0o755); err != nil {
+		return "", err
+	}
+	if samePath(source, destination) {
+		if err := removeFileIfExists(obsolete); err != nil {
+			return "", err
+		}
+		return destination, nil
+	}
+	if err := copyFile(source, destination); err != nil {
+		return "", err
+	}
+	if err := removeFileIfExists(obsolete); err != nil {
+		return "", err
+	}
+	return destination, nil
+}
+
+func removeStandardBackgrounds() error {
+	for _, path := range paths.StandardBackgroundFiles() {
+		if err := removeFileIfExists(path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type standardBackgroundBackup struct {
+	files map[string]string
+}
+
+func backupStandardBackgrounds() (*standardBackgroundBackup, error) {
+	backup := &standardBackgroundBackup{files: make(map[string]string)}
+	if err := os.MkdirAll(paths.DataDir(), 0o755); err != nil {
+		return nil, err
+	}
+	for _, original := range paths.StandardBackgroundFiles() {
+		if _, err := os.Stat(original); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			backup.cleanup()
+			return nil, err
+		}
+		temporary, err := os.CreateTemp(paths.DataDir(), ".background-setup-backup-*")
+		if err != nil {
+			backup.cleanup()
+			return nil, err
+		}
+		backupPath := temporary.Name()
+		if err := temporary.Close(); err != nil {
+			_ = os.Remove(backupPath)
+			backup.cleanup()
+			return nil, err
+		}
+		if err := copyFile(original, backupPath); err != nil {
+			_ = os.Remove(backupPath)
+			backup.cleanup()
+			return nil, err
+		}
+		backup.files[original] = backupPath
+	}
+	return backup, nil
+}
+
+func (backup *standardBackgroundBackup) restore() error {
+	if backup == nil {
+		return nil
+	}
+	if err := removeStandardBackgrounds(); err != nil {
+		return err
+	}
+	for original, saved := range backup.files {
+		if err := copyFile(saved, original); err != nil {
+			return err
+		}
+	}
+	backup.cleanup()
+	return nil
+}
+
+func (backup *standardBackgroundBackup) cleanup() {
+	if backup == nil {
+		return
+	}
+	for _, saved := range backup.files {
+		_ = os.Remove(saved)
+	}
+}
+
+func rollbackBackgroundChange(backup *standardBackgroundBackup, operationErr error) error {
+	if backup == nil {
+		return operationErr
+	}
+	if restoreErr := backup.restore(); restoreErr != nil {
+		return fmt.Errorf("%w; restoring the previous background also failed: %v", operationErr, restoreErr)
+	}
+	return operationErr
 }
 
 func isWithinPath(value, directory string) bool {

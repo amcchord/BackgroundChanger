@@ -8,10 +8,18 @@ go test ./...
 go test -race ./internal/...
 go vet ./...
 git diff --check
-powershell -ExecutionPolicy Bypass -File .\build.ps1 -Version v4.5.0
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -Version v4.7.0
 ```
 
-Tests cover YAML validation, migration, and round-tripping; the guarded boot-refresh default and opt-out; stable Windows boot identity; authenticated-session, console-change, process, API-failure, and once-per-boot paths; v3-to-W:ID data migration; the three presets; installer preset-selection and final Done-state copy; the permanent generated timestamp; edition classification; policy ownership; space-free CSP image staging; PowerShell command encoding; service queue/drain behavior; snapshot formatting; and renderer dimensions.
+Tests cover YAML validation, migration, and round-tripping; all twelve background variants; standard-image discovery and JPEG/PNG replacement; measured truncation; aspect-aware fallbacks; bounded panel and row metrics across 800×600, 1024×768, 1280×1024, 1366×768, 1920×1080, 2560×1080, 3440×1440, and 1080×1920; the guarded boot-refresh default and opt-out; stable Windows boot identity; authenticated-session, console-change, process, API-failure, and once-per-boot paths; v3-to-W:ID data migration; the three presets; installer preset/background-selection and final Done-state copy; the permanent generated timestamp; edition classification; policy ownership; space-free CSP image staging; PowerShell command encoding; service queue/drain behavior; snapshot formatting; and renderer dimensions.
+
+## Responsive backgrounds and installer validation for v4.7.0
+
+- Rendered deliberately long hostname, OS, CPU, GPU, address, serial, failure, and service values at standard, 4:3, 5:4, ultrawide, and portrait dimensions; measured fitting kept each value and row inside its assigned bounds.
+- Rendered and decoded all six color families in both Dark and Light modes.
+- Opened the built native installer at 150% Windows scaling, navigated both pages, selected Dark/Light and multiple color families, and confirmed the live preview, swatches, selection copy, Back/Close/Repair ordering, and lower-right advancing action.
+- Opened the native JPEG/PNG browser from the drop well and confirmed the same control is registered as a file-drop target.
+- Verified standard-path discovery, PNG-to-JPEG replacement, obsolete-extension cleanup, and explicit-path precedence in automated tests.
 
 ## Installer UX validation for v4.5.0
 

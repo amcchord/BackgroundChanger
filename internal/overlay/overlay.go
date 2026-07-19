@@ -35,80 +35,75 @@ func Dimensions(cfg config.Config, snapshot sysinfo.Snapshot) (int, int) {
 	if cfg.Width != 0 && cfg.Height != 0 {
 		return cfg.Width, cfg.Height
 	}
-	if snapshot.DisplayWidth >= 800 && snapshot.DisplayHeight >= 600 {
+	if snapshot.DisplayWidth >= 600 && snapshot.DisplayWidth <= 7680 && snapshot.DisplayHeight >= 600 && snapshot.DisplayHeight <= 7680 {
 		return snapshot.DisplayWidth, snapshot.DisplayHeight
 	}
-	return 1920, 1080
+	return fallbackDimensions(snapshot.DisplayWidth, snapshot.DisplayHeight)
 }
 
 func Render(snapshot sysinfo.Snapshot, cfg config.Config) (image.Image, error) {
 	width, height := Dimensions(cfg, snapshot)
-	base, err := background(cfg.BaseImage, width, height)
+	theme := themeFor(cfg)
+	base, err := background(cfg.BaseImage, width, height, theme)
 	if err != nil {
 		return nil, err
 	}
 	dc := gg.NewContextForImage(base)
-	scale := min(float64(width)/1920, float64(height)/1080)
-	if scale < 0.52 {
-		scale = 0.52
-	}
-	padding := 64.0 * scale
-	panelWidth := (float64(width) - padding*2) * 0.39
-	panelY := padding + 190*scale
-	rightPanelX := float64(width) - padding - panelWidth
-
-	// The identity and two side panels reserve both Windows-owned clock regions:
-	// top-center on Windows 11 and lower-left on Windows 10. The center and
-	// bottom-left remain background-only so Windows can draw over them cleanly.
-	logo, err := branding.Logo()
-	if err != nil {
-		return nil, err
-	}
-	drawLogo(dc, logo, padding, padding-4*scale, 62*scale)
-	if err := setFont(dc, 18*scale); err != nil {
-		return nil, err
-	}
-	dc.SetColor(color.RGBA{137, 207, 240, 255})
-	dc.DrawString(overlayBrandLabel, padding+78*scale, padding+19*scale)
-	if err := setFont(dc, 58*scale); err != nil {
-		return nil, err
-	}
-	dc.SetColor(color.White)
-	dc.DrawString(strings.ToUpper(snapshot.Hostname), padding, padding+105*scale)
-	if err := setFont(dc, 17*scale); err != nil {
-		return nil, err
-	}
-	dc.SetColor(color.RGBA{174, 192, 210, 255})
-	dc.DrawString("Identify this machine before anyone signs in", padding, padding+139*scale)
-
 	left, right := panelRows(snapshot, cfg)
 	criticalRows := 0
 	if cfg.Show.CriticalServices {
 		criticalRows = (min(len(snapshot.CriticalServices), 4) + 1) / 2
 	}
-	contentRows := max(len(left), len(right))
-	contentUnits := 82 + float64(contentRows)*panelRowStep + 28
-	healthUnits := 82 + float64(len(right))*panelRowStep + float64(criticalRows)*25 + 24
-	panelHeight := max(228*scale, max(contentUnits, healthUnits)*scale)
-	panelHeight = min(panelHeight, min(490*scale, float64(height)*0.48))
+	layout := calculateLayout(width, height, len(left), len(right), criticalRows)
+	scale, padding := layout.Scale, layout.Padding
+
+	// The identity and two side panels reserve both Windows-owned clock regions:
+	// top-center on Windows 11 and lower-left on Windows 10. The center and
+	// bottom-left remain background-only on normal and wide displays. Tall
+	// displays stack both panels below the identity header.
+	logo, err := branding.Logo()
+	if err != nil {
+		return nil, err
+	}
+	drawLogo(dc, logo, padding, padding-4*scale, 62*scale)
+	if err := setFont(dc, max(10, 18*scale)); err != nil {
+		return nil, err
+	}
+	dc.SetColor(theme.Accent)
+	dc.DrawString(overlayBrandLabel, padding+78*scale, padding+19*scale)
+	dc.SetColor(theme.Headline)
+	drawFittedText(dc, strings.ToUpper(snapshot.Hostname), padding, padding+105*scale, layout.HeaderMaxWidth, max(24, 58*scale), max(16, 27*scale))
+	if err := setFont(dc, max(10, 17*scale)); err != nil {
+		return nil, err
+	}
+	dc.SetColor(theme.Subtitle)
+	drawFittedText(dc, "Identify this machine before anyone signs in", padding, padding+139*scale, layout.HeaderMaxWidth, max(10, 17*scale), 9)
 
 	if len(left) > 0 {
-		drawPanel(dc, padding, panelY, panelWidth, panelHeight, scale, "SYSTEM", left)
+		drawPanel(dc, layout.Left, scale, layout.RowStep, theme, "SYSTEM", left)
 	}
 	if len(right) > 0 || criticalRows > 0 {
-		drawPanel(dc, rightPanelX, panelY, panelWidth, panelHeight, scale, "HEALTH", right)
+		drawPanel(dc, layout.Right, scale, layout.RowStep, theme, "HEALTH", right)
 		if cfg.Show.CriticalServices {
-			drawHealth(dc, rightPanelX, panelY, panelWidth, panelHeight, scale, len(right), snapshot)
+			drawHealth(dc, layout.Right, scale, layout.RowStep, theme, len(right), snapshot)
 		}
 	}
 
-	if err := setFont(dc, 14*scale); err != nil {
+	if err := setFont(dc, max(9, 14*scale)); err != nil {
 		return nil, err
 	}
-	dc.SetColor(color.RGBA{153, 172, 191, 255})
+	dc.SetColor(theme.Footer)
 	footer := generatedAtLabel(snapshot)
+	footer, footerSize := fittedText(dc, footer, float64(width)-2*padding, max(9, 14*scale), 8)
+	_ = setFont(dc, footerSize)
 	dc.DrawStringAnchored(footer, float64(width)-padding, float64(height)-18*scale, 1, 1)
 	return dc.Image(), nil
+}
+
+// BackgroundPreview renders only the selected backdrop. The installer uses it
+// for color swatches without duplicating the production gradient implementation.
+func BackgroundPreview(cfg config.Config, width, height int) (image.Image, error) {
+	return background(cfg.BaseImage, width, height, themeFor(cfg))
 }
 
 func RenderToFile(path string, snapshot sysinfo.Snapshot, cfg config.Config) error {
@@ -142,8 +137,6 @@ func RenderToFile(path string, snapshot sysinfo.Snapshot, cfg config.Config) err
 }
 
 type row struct{ label, value string }
-
-const panelRowStep = 54
 
 func panelRows(snapshot sysinfo.Snapshot, cfg config.Config) (left, right []row) {
 	show := cfg.Show
@@ -183,7 +176,7 @@ func panelRows(snapshot sysinfo.Snapshot, cfg config.Config) (left, right []row)
 	if show.FailedAutoServices {
 		value := "None"
 		if len(snapshot.FailedAutoServices) > 0 {
-			value = strings.Join(snapshot.FailedAutoServices, ", ")
+			value = fmt.Sprintf("%d: %s", len(snapshot.FailedAutoServices), strings.Join(snapshot.FailedAutoServices, ", "))
 		}
 		right = append(right, row{"AUTO FAILURES", value})
 	}
@@ -194,46 +187,42 @@ func generatedAtLabel(snapshot sysinfo.Snapshot) string {
 	return "Generated at " + snapshot.RefreshedAt.Format("2006-01-02 15:04:05 MST")
 }
 
-func drawPanel(dc *gg.Context, x, y, width, height, scale float64, title string, rows []row) {
-	dc.SetRGBA(0.025, 0.055, 0.10, 0.89)
-	dc.DrawRoundedRectangle(x, y, width, height, 22*scale)
+func drawPanel(dc *gg.Context, panel panelRect, scale, rowStep float64, theme renderTheme, title string, rows []row) {
+	dc.SetColor(theme.Panel)
+	dc.DrawRoundedRectangle(panel.X, panel.Y, panel.Width, panel.Height, 22*scale)
 	dc.Fill()
-	dc.SetRGBA(0.32, 0.72, 0.93, 0.23)
+	dc.SetColor(theme.PanelBorder)
 	dc.SetLineWidth(1.4 * scale)
-	dc.DrawRoundedRectangle(x, y, width, height, 22*scale)
+	dc.DrawRoundedRectangle(panel.X, panel.Y, panel.Width, panel.Height, 22*scale)
 	dc.Stroke()
-	_ = setFont(dc, 16*scale)
-	dc.SetColor(color.RGBA{94, 203, 247, 255})
-	dc.DrawString(title, x+28*scale, y+38*scale)
+	_ = setFont(dc, max(9, 16*scale))
+	dc.SetColor(theme.Accent)
+	dc.DrawString(title, panel.X+28*scale, panel.Y+38*scale)
 
-	rowY := y + 82*scale
-	step := panelRowStep * scale
+	rowY := panel.Y + 82*scale
 	for _, item := range rows {
-		_ = setFont(dc, 12*scale)
-		dc.SetColor(color.RGBA{128, 153, 178, 255})
-		dc.DrawString(item.label, x+28*scale, rowY)
-		_ = setFont(dc, 17*scale)
-		dc.SetColor(color.RGBA{239, 246, 252, 255})
-		dc.DrawString(compact(item.value, int(width/(10*scale))), x+28*scale, rowY+23*scale)
-		rowY += step
-		if rowY > y+height-35*scale {
-			break
-		}
+		_ = setFont(dc, max(8, 12*scale))
+		dc.SetColor(theme.Label)
+		dc.DrawString(item.label, panel.X+28*scale, rowY)
+		dc.SetColor(theme.Value)
+		drawFittedText(dc, item.value, panel.X+28*scale, rowY+23*scale, panel.Width-56*scale, max(10, 17*scale), 8)
+		rowY += rowStep
 	}
 }
 
-func drawHealth(dc *gg.Context, x, y, width, height, scale float64, precedingRows int, snapshot sysinfo.Snapshot) {
-	startY := y + 82*scale + float64(precedingRows)*panelRowStep*scale
-	if startY > y+height-32*scale {
+func drawHealth(dc *gg.Context, panel panelRect, scale, rowStep float64, theme renderTheme, precedingRows int, snapshot sysinfo.Snapshot) {
+	startY := panel.Y + 82*scale + float64(precedingRows)*rowStep
+	if startY > panel.Y+panel.Height-20*scale {
 		return
 	}
 	items := snapshot.CriticalServices
 	if len(items) > 4 {
 		items = items[:4]
 	}
-	_ = setFont(dc, 13*scale)
+	_ = setFont(dc, max(8, 13*scale))
 	for i, service := range items {
-		dotX := x + 29*scale + float64(i%2)*(width/2-18*scale)
+		columnWidth := panel.Width / 2
+		dotX := panel.X + 29*scale + float64(i%2)*(columnWidth-18*scale)
 		dotY := startY + float64(i/2)*25*scale
 		if service.Running {
 			dc.SetColor(color.RGBA{71, 220, 151, 255})
@@ -242,8 +231,8 @@ func drawHealth(dc *gg.Context, x, y, width, height, scale float64, precedingRow
 		}
 		dc.DrawCircle(dotX, dotY-4*scale, 4*scale)
 		dc.Fill()
-		dc.SetColor(color.RGBA{202, 216, 229, 255})
-		dc.DrawString(service.Name, dotX+11*scale, dotY)
+		dc.SetColor(theme.Service)
+		drawFittedText(dc, service.Name, dotX+11*scale, dotY, columnWidth-52*scale, max(8, 13*scale), 7)
 	}
 }
 
@@ -255,7 +244,7 @@ func drawLogo(dc *gg.Context, logo image.Image, x, y, size float64) {
 	dc.Pop()
 }
 
-func background(path string, width, height int) (image.Image, error) {
+func background(path string, width, height int, theme renderTheme) (image.Image, error) {
 	if path != "" {
 		f, err := os.Open(path)
 		if err != nil {
@@ -273,14 +262,19 @@ func background(path string, width, height int) (image.Image, error) {
 		fy := float64(y) / float64(height)
 		for x := 0; x < width; x++ {
 			fx := float64(x) / float64(width)
+			vertical := clampFloat(fy*0.88+fx*0.12, 0, 1)
 			glow := max(0, 1-((fx-0.82)*(fx-0.82)+(fy-0.14)*(fy-0.14))*3.2)
-			r := uint8(7 + 5*fy + 5*glow)
-			g := uint8(20 + 15*fy + 28*glow)
-			b := uint8(38 + 28*fy + 42*glow)
-			img.SetRGBA(x, y, color.RGBA{r, g, b, 255})
+			base := mixColor(theme.GradientStart, theme.GradientEnd, vertical)
+			img.SetRGBA(x, y, mixColor(base, theme.Glow, glow*0.22))
 		}
 	}
 	return img, nil
+}
+
+func mixColor(first, second color.RGBA, amount float64) color.RGBA {
+	amount = clampFloat(amount, 0, 1)
+	mix := func(a, b uint8) uint8 { return uint8(float64(a)*(1-amount) + float64(b)*amount + 0.5) }
+	return color.RGBA{mix(first.R, second.R), mix(first.G, second.G), mix(first.B, second.B), 255}
 }
 
 func cover(source image.Image, width, height int) image.Image {
@@ -316,6 +310,54 @@ func setFont(dc *gg.Context, size float64) error {
 	return dc.LoadFontFace(fontPath, size)
 }
 
+func drawFittedText(dc *gg.Context, value string, x, y, maxWidth, preferredSize, minimumSize float64) {
+	text, size := fittedText(dc, value, maxWidth, preferredSize, minimumSize)
+	_ = setFont(dc, size)
+	dc.DrawString(text, x, y)
+}
+
+func fittedText(dc *gg.Context, value string, maxWidth, preferredSize, minimumSize float64) (string, float64) {
+	value = strings.Join(strings.Fields(value), " ")
+	if preferredSize < minimumSize {
+		preferredSize = minimumSize
+	}
+	for size := preferredSize; size >= minimumSize; size -= 0.5 {
+		_ = setFont(dc, size)
+		width, _ := dc.MeasureString(value)
+		if width <= maxWidth {
+			return value, size
+		}
+	}
+	_ = setFont(dc, minimumSize)
+	return truncateMeasured(value, maxWidth, func(candidate string) float64 {
+		width, _ := dc.MeasureString(candidate)
+		return width
+	}), minimumSize
+}
+
+func truncateMeasured(value string, maxWidth float64, measure func(string) float64) string {
+	value = strings.Join(strings.Fields(value), " ")
+	if value == "" || measure(value) <= maxWidth {
+		return value
+	}
+	ellipsis := "…"
+	if maxWidth <= 0 || measure(ellipsis) > maxWidth {
+		return ""
+	}
+	runes := []rune(value)
+	low, high := 0, len(runes)
+	for low < high {
+		middle := (low + high + 1) / 2
+		candidate := strings.TrimSpace(string(runes[:middle])) + ellipsis
+		if measure(candidate) <= maxWidth {
+			low = middle
+		} else {
+			high = middle - 1
+		}
+	}
+	return strings.TrimSpace(string(runes[:low])) + ellipsis
+}
+
 func rebootLabel(pending bool) string {
 	if pending {
 		return "Required"
@@ -338,15 +380,4 @@ func valueOr(value, fallback string) string {
 		return fallback
 	}
 	return value
-}
-
-func compact(value string, maxRunes int) string {
-	runes := []rune(strings.Join(strings.Fields(value), " "))
-	if len(runes) <= maxRunes {
-		return string(runes)
-	}
-	if maxRunes < 2 {
-		return string(runes[:maxRunes])
-	}
-	return strings.TrimSpace(string(runes[:maxRunes-1])) + "…"
 }

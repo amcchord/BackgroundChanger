@@ -62,6 +62,9 @@ func TestExistingConfigGetsSafeProCompatibilityDefault(t *testing.T) {
 	if !cfg.RefreshLoginScreenBoot {
 		t.Fatal("config without the boot-refresh field should enable the guarded default")
 	}
+	if cfg.BackgroundColor != BackgroundBlue || cfg.BackgroundMode != BackgroundDark {
+		t.Fatalf("config without v4.7 appearance fields = %q/%q", cfg.BackgroundColor, cfg.BackgroundMode)
+	}
 	cfg, err = decode([]byte("preset: balanced\nrefresh_minutes: 5\nenable_pro_compatibility: false\n"), false)
 	if err != nil {
 		t.Fatal(err)
@@ -75,6 +78,49 @@ func TestExistingConfigGetsSafeProCompatibilityDefault(t *testing.T) {
 	}
 	if cfg.RefreshLoginScreenBoot {
 		t.Fatal("explicit login-screen boot refresh opt-out was ignored")
+	}
+}
+
+func TestBackgroundChoicesValidate(t *testing.T) {
+	for _, name := range BackgroundColors() {
+		for _, mode := range []string{BackgroundDark, BackgroundLight} {
+			cfg := Default()
+			cfg.BackgroundColor, cfg.BackgroundMode = name, mode
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("%s/%s: %v", name, mode, err)
+			}
+		}
+	}
+	cfg := Default()
+	cfg.BackgroundColor = "chartreuse"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "background_color") {
+		t.Fatalf("invalid background color error = %v", err)
+	}
+	cfg = Default()
+	cfg.BackgroundMode = "automatic"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "background_mode") {
+		t.Fatalf("invalid background mode error = %v", err)
+	}
+}
+
+func TestApplyPresetChangesOnlyInformationMix(t *testing.T) {
+	existing := Default()
+	existing.RefreshMinutes = 17
+	existing.BackgroundColor = BackgroundCopper
+	existing.BackgroundMode = BackgroundLight
+	existing.BaseImage = `C:\managed\rack.png`
+	existing.Width, existing.Height = 1080, 1920
+
+	got, err := ApplyPreset(existing, PresetOperations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPreset, _ := ForPreset(PresetOperations)
+	if got.Preset != PresetOperations || got.Show != wantPreset.Show {
+		t.Fatalf("preset information mix was not applied: %#v", got)
+	}
+	if got.RefreshMinutes != existing.RefreshMinutes || got.BackgroundColor != existing.BackgroundColor || got.BackgroundMode != existing.BackgroundMode || got.BaseImage != existing.BaseImage || got.Width != existing.Width || got.Height != existing.Height {
+		t.Fatalf("non-layout settings changed: got %#v, existing %#v", got, existing)
 	}
 }
 
@@ -178,5 +224,10 @@ func TestValidation(t *testing.T) {
 		if err := tc.Validate(); err == nil {
 			t.Fatalf("expected %#v to be invalid", tc)
 		}
+	}
+	portrait := Default()
+	portrait.Width, portrait.Height = 600, 1200
+	if err := portrait.Validate(); err != nil {
+		t.Fatalf("portrait dimensions rejected: %v", err)
 	}
 }
