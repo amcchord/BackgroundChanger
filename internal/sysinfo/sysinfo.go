@@ -272,6 +272,16 @@ func SupportsMachineLockScreenPolicy(edition string) bool {
 	return strings.Contains(e, "enterprise") || strings.Contains(e, "education") || strings.Contains(e, "server") || strings.Contains(e, "iot")
 }
 
+func CurrentEdition() string {
+	_, edition, _, _ := windowsVersion()
+	return edition
+}
+
+func IsProfessionalEdition(edition string) bool {
+	e := strings.ToLower(edition)
+	return strings.Contains(e, "professional") && !strings.Contains(e, "education")
+}
+
 func bytesToGiB(value uint64) float64 { return float64(value) / (1024 * 1024 * 1024) }
 
 func compact(value string, max int) string {

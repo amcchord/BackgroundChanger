@@ -1,10 +1,15 @@
 package loginscreen
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/amcchord/WallpaperIdentity/v4/internal/paths"
 )
 
 func TestOwnedPath(t *testing.T) {
@@ -33,6 +38,7 @@ func TestOwnedMDMImagePattern(t *testing.T) {
 	for _, value := range []string{
 		`file:///C:/ProgramData/Wallpaper%20Identity/backgrounds/status-1.jpg`,
 		`C:\ProgramData\Wallpaper Identity\backgrounds\status-1.jpg`,
+		`file:///C:/ProgramData/WallpaperIdentityCSP/status-1.jpg`,
 		`file:///C:/ProgramData/BackgroundChanger/backgrounds/status-1.jpg`,
 	} {
 		if !pattern.MatchString(value) {
@@ -41,6 +47,56 @@ func TestOwnedMDMImagePattern(t *testing.T) {
 	}
 	if pattern.MatchString(`file:///C:/Windows/Web/Screen/img100.jpg`) {
 		t.Fatal("must not claim an unrelated MDM image")
+	}
+}
+
+func TestStageMDMImageUsesSpaceFreeDeliveryDirectory(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("ProgramData", root)
+	source := filepath.Join(t.TempDir(), "machine-status.jpg")
+	if err := os.WriteFile(source, []byte("jpeg"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	staged, err := stageMDMImage(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(filepath.Base(filepath.Dir(staged)), " ") {
+		t.Fatalf("CSP delivery directory contains a space: %s", staged)
+	}
+	if b, err := os.ReadFile(staged); err != nil || string(b) != "jpeg" {
+		t.Fatalf("staged content = %q, %v", b, err)
+	}
+}
+
+func TestCleanupStagedMDMImagesRetainsCurrentAndThreePrevious(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("ProgramData", root)
+	var current string
+	for index := 0; index < 7; index++ {
+		path := filepath.Join(paths.CSPImageDir(), fmt.Sprintf("machine-%d.jpg", index))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("jpeg"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		stamp := time.Unix(int64(index), 0)
+		if err := os.Chtimes(path, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+		current = path
+	}
+	cleanupStagedMDMImages(current, 4)
+	entries, err := os.ReadDir(paths.CSPImageDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 4 {
+		t.Fatalf("retained %d CSP images, want 4", len(entries))
+	}
+	if _, err := os.Stat(current); err != nil {
+		t.Fatalf("current CSP image was removed: %v", err)
 	}
 }
 

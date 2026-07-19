@@ -42,12 +42,6 @@ func (h *handler) Execute(_ []string, requests <-chan svc.ChangeRequest, changes
 	logger, closeLog := serviceLogger()
 	defer closeLog()
 	worker := engine.New(logger)
-	_, initialErr := worker.Refresh("service-start")
-	if initialErr != nil {
-		logger.Printf("initial refresh did not complete: %v", initialErr)
-	}
-	changes <- svc.Status{State: svc.Running, Accepts: accepted}
-
 	cfg, err := config.LoadOrCreate(paths.ConfigFile())
 	if err != nil {
 		cfg = config.Default()
@@ -69,12 +63,20 @@ func (h *handler) Execute(_ []string, requests <-chan svc.ChangeRequest, changes
 		defer refreshWG.Done()
 		for job := range trigger {
 			if job.restore {
-				job.done <- loginscreen.RestoreMDMBridge()
+				job.done <- loginscreen.RestoreDevicePolicies()
 				continue
 			}
-			_, _ = worker.Refresh(job.reason)
+			if _, err := worker.Refresh(job.reason); err != nil {
+				logger.Printf("%s refresh did not complete: %v", job.reason, err)
+			}
 		}
 	}()
+	// Report Running promptly so a slow policy provider cannot exhaust the
+	// Service Control Manager start window. Setup still blocks on status.json,
+	// and this serialized worker completes the initial render before any queued
+	// boot-settled/session/timer refresh.
+	enqueueRefresh(trigger, "service-start", false)
+	changes <- svc.Status{State: svc.Running, Accepts: accepted}
 
 	for {
 		select {
@@ -87,9 +89,11 @@ func (h *handler) Execute(_ []string, requests <-chan svc.ChangeRequest, changes
 			case svc.Interrogate:
 				changes <- request.CurrentStatus
 			case svc.Stop, svc.Shutdown:
-				changes <- svc.Status{State: svc.StopPending, WaitHint: 60000}
+				changes <- svc.Status{State: svc.StopPending, WaitHint: 120000}
 				close(trigger)
-				refreshWG.Wait()
+				if !waitForWorker(&refreshWG, 30*time.Second) {
+					logger.Printf("refresh worker did not drain within 30s; allowing Windows shutdown to continue")
+				}
 				return false, 0
 			case svc.SessionChange:
 				if request.EventType == wtsSessionLock || request.EventType == wtsSessionLogoff || request.EventType == wtsSessionLogon {
@@ -110,7 +114,7 @@ func (h *handler) Execute(_ []string, requests <-chan svc.ChangeRequest, changes
 				if restoreErr != nil {
 					refreshDisabled = false
 					marker = restoreErr.Error()
-					logger.Printf("MDM policy restore failed: %v", restoreErr)
+					logger.Printf("device policy restore failed: %v", restoreErr)
 				}
 				_ = os.WriteFile(paths.MDMRestoreMarker(), []byte(marker), 0o600)
 			case refreshControl:
@@ -119,6 +123,20 @@ func (h *handler) Execute(_ []string, requests <-chan svc.ChangeRequest, changes
 				}
 			}
 		}
+	}
+}
+
+func waitForWorker(group *sync.WaitGroup, timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		group.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
 	}
 }
 

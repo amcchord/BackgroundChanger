@@ -6,11 +6,13 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -19,7 +21,7 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-const ownedMDMImagePattern = `(?i)(Wallpaper(?:[ ]|%20)Identity|BackgroundChanger)[/\\]backgrounds[/\\]`
+const ownedMDMImagePattern = `(?i)((Wallpaper(?:[ ]|%20)Identity|BackgroundChanger)[/\\]backgrounds|WallpaperIdentityCSP)[/\\]`
 
 const personalizationPolicy = `SOFTWARE\Policies\Microsoft\Windows\Personalization`
 const systemPolicy = `SOFTWARE\Policies\Microsoft\Windows\System`
@@ -38,13 +40,19 @@ type policyBackup struct {
 }
 
 type ApplyResult struct {
-	GroupPolicyApplied bool     `json:"group_policy_applied"`
-	MDMBridgeApplied   bool     `json:"mdm_bridge_applied"`
-	LockAppRefreshed   bool     `json:"lock_app_refreshed"`
-	Warnings           []string `json:"warnings,omitempty"`
+	GroupPolicyApplied      bool     `json:"group_policy_applied"`
+	MDMBridgeApplied        bool     `json:"mdm_bridge_applied"`
+	ProCompatibilityApplied bool     `json:"pro_compatibility_applied"`
+	LockAppRefreshed        bool     `json:"lock_app_refreshed"`
+	Warnings                []string `json:"warnings,omitempty"`
 }
 
-func Apply(imagePath string) ApplyResult {
+type ApplyOptions struct {
+	ProfessionalEdition    bool
+	EnableProCompatibility bool
+}
+
+func Apply(imagePath string, options ApplyOptions) ApplyResult {
 	result := ApplyResult{}
 	abs, err := filepath.Abs(imagePath)
 	if err != nil {
@@ -55,6 +63,19 @@ func Apply(imagePath string) ApplyResult {
 		result.Warnings = append(result.Warnings, "group policy: "+err.Error())
 	} else {
 		result.GroupPolicyApplied = true
+	}
+	if options.ProfessionalEdition {
+		if options.EnableProCompatibility {
+			if err := ensureProCompatibility(); err != nil {
+				result.Warnings = append(result.Warnings, "Windows Pro compatibility: "+err.Error())
+			} else {
+				result.ProCompatibilityApplied = true
+			}
+		} else if fileExists(paths.ProCompatibilityBackupFile()) {
+			if err := RestoreProCompatibility(); err != nil {
+				result.Warnings = append(result.Warnings, "disable Windows Pro compatibility: "+err.Error())
+			}
+		}
 	}
 	if err := applyMDMBridge(abs); err != nil {
 		result.Warnings = append(result.Warnings, "MDM bridge: "+err.Error())
@@ -73,7 +94,7 @@ func Apply(imagePath string) ApplyResult {
 }
 
 func applyGroupPolicy(imagePath string) error {
-	key, _, err := registry.CreateKey(registry.LOCAL_MACHINE, personalizationPolicy, registry.SET_VALUE)
+	key, _, err := registry.CreateKey(registry.LOCAL_MACHINE, personalizationPolicy, registry.QUERY_VALUE|registry.SET_VALUE)
 	if err != nil {
 		return err
 	}
@@ -87,56 +108,137 @@ func applyGroupPolicy(imagePath string) error {
 	if err := key.SetDWordValue("LockScreenOverlaysDisabled", 1); err != nil {
 		return err
 	}
-	logonKey, _, err := registry.CreateKey(registry.LOCAL_MACHINE, systemPolicy, registry.SET_VALUE)
+	if current, _, err := key.GetStringValue("LockScreenImage"); err != nil || !samePath(current, imagePath) {
+		return fmt.Errorf("LockScreenImage read-back mismatch: got %q", current)
+	}
+	if current, _, err := key.GetIntegerValue("NoChangingLockScreen"); err != nil || current != 1 {
+		return fmt.Errorf("NoChangingLockScreen read-back mismatch: got %d", current)
+	}
+	if current, _, err := key.GetIntegerValue("LockScreenOverlaysDisabled"); err != nil || current != 1 {
+		return fmt.Errorf("LockScreenOverlaysDisabled read-back mismatch: got %d", current)
+	}
+	logonKey, _, err := registry.CreateKey(registry.LOCAL_MACHINE, systemPolicy, registry.QUERY_VALUE|registry.SET_VALUE)
 	if err != nil {
 		return err
 	}
 	defer logonKey.Close()
 	// Microsoft's "Show clear logon background" policy keeps the status text
 	// readable after the user advances from the lock screen to credentials.
-	return logonKey.SetDWordValue("DisableAcrylicBackgroundOnLogon", 1)
+	if err := logonKey.SetDWordValue("DisableAcrylicBackgroundOnLogon", 1); err != nil {
+		return err
+	}
+	if current, _, err := logonKey.GetIntegerValue("DisableAcrylicBackgroundOnLogon"); err != nil || current != 1 {
+		return fmt.Errorf("DisableAcrylicBackgroundOnLogon read-back mismatch: got %d", current)
+	}
+	return nil
 }
 
 func applyMDMBridge(imagePath string) error {
-	fileURL := (&url.URL{Scheme: "file", Path: "/" + filepath.ToSlash(imagePath)}).String()
+	stagedPath, err := stageMDMImage(imagePath)
+	if err != nil {
+		return fmt.Errorf("stage CSP image: %w", err)
+	}
+	defer cleanupStagedMDMImages(stagedPath, 4)
+	fileURL := (&url.URL{Scheme: "file", Path: "/" + filepath.ToSlash(stagedPath)}).String()
 	fileURL = strings.Replace(fileURL, "file:////", "file:///", 1)
 	quotedURL := strings.ReplaceAll(fileURL, "'", "''")
 	quotedBackup := strings.ReplaceAll(paths.MDMBackupFile(), "'", "''")
 	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
+$ProgressPreference='SilentlyContinue'
 $ns='root\cimv2\mdm\dmmap'
 $class='MDM_Personalization'
 $url='%s'
 $backup='%s'
 $instance=Get-CimInstance -Namespace $ns -ClassName $class -ErrorAction SilentlyContinue | Where-Object { $_.ParentID -eq './Vendor/MSFT' -and $_.InstanceID -eq 'Personalization' } | Select-Object -First 1
 if (-not (Test-Path -LiteralPath $backup)) {
-  $record=[pscustomobject]@{ Existed=($null -ne $instance); Url=$(if ($null -eq $instance) { '' } else { [string]$instance.LockScreenImageUrl }) }
+  $previousUrl=$(if ($null -eq $instance) { '' } else { [string]$instance.LockScreenImageUrl })
+  $record=[pscustomobject]@{ Existed=(-not [string]::IsNullOrWhiteSpace($previousUrl)); Url=$previousUrl }
   $record | ConvertTo-Json -Compress | Set-Content -LiteralPath $backup -Encoding UTF8
+} else {
+  $record=Get-Content -LiteralPath $backup -Raw | ConvertFrom-Json
+  if (([bool]$record.Existed -and [string]$record.Url -match '%s') -or [string]::IsNullOrWhiteSpace([string]$record.Url)) {
+    [pscustomobject]@{ Existed=$false; Url='' } | ConvertTo-Json -Compress | Set-Content -LiteralPath $backup -Encoding UTF8
+  }
 }
 if ($null -eq $instance) {
   New-CimInstance -Namespace $ns -ClassName $class -Property @{ ParentID='./Vendor/MSFT'; InstanceID='Personalization'; LockScreenImageUrl=$url } | Out-Null
 } else {
   Set-CimInstance -CimInstance $instance -Property @{ LockScreenImageUrl=$url } | Out-Null
-}`, quotedURL, quotedBackup)
-	powershell := filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
-	if _, err := os.Stat(powershell); err != nil {
-		powershell = "powershell.exe"
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodePowerShell(script))
-	cmd.SysProcAttr = hiddenProcessAttributes()
-	output, err := cmd.CombinedOutput()
-	if ctx.Err() != nil {
-		return fmt.Errorf("timed out")
-	}
-	if err != nil {
-		message := compactOutput(string(output))
-		if message == "" {
-			message = err.Error()
-		}
-		return fmt.Errorf("%s", message)
+}
+$deadline=(Get-Date).AddSeconds(25)
+$verify=$null
+do {
+  Start-Sleep -Milliseconds 250
+  $verify=Get-CimInstance -Namespace $ns -ClassName $class -ErrorAction SilentlyContinue | Where-Object { $_.ParentID -eq './Vendor/MSFT' -and $_.InstanceID -eq 'Personalization' } | Select-Object -First 1
+  if ($null -ne $verify -and [string]$verify.LockScreenImageUrl -eq $url -and [int]$verify.LockScreenImageStatus -eq 1) { return }
+} while ((Get-Date) -lt $deadline)
+$actualUrl=$(if ($null -eq $verify) { '<missing>' } else { [string]$verify.LockScreenImageUrl })
+$actualStatus=$(if ($null -eq $verify) { -1 } else { [int]$verify.LockScreenImageStatus })
+throw "Personalization CSP did not confirm the image (url=$actualUrl, status=$actualStatus; expected status=1)"`, quotedURL, quotedBackup, ownedMDMImagePattern)
+	if err := runPowerShell(script, 40*time.Second); err != nil {
+		return err
 	}
 	return nil
+}
+
+func ensureProCompatibility() error {
+	quotedBackup := strings.ReplaceAll(paths.ProCompatibilityBackupFile(), "'", "''")
+	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
+$ProgressPreference='SilentlyContinue'
+$ns='root\cimv2\mdm\dmmap'
+$class='MDM_SharedPC'
+$backup='%s'
+$instance=Get-CimInstance -Namespace $ns -ClassName $class -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not (Test-Path -LiteralPath $backup)) {
+  $record=[pscustomobject]@{ Existed=($null -ne $instance); Enabled=$(if ($null -eq $instance) { $false } else { [bool]$instance.SetEduPolicies }) }
+  $record | ConvertTo-Json -Compress | Set-Content -LiteralPath $backup -Encoding UTF8
+}
+if ($null -eq $instance) {
+  New-CimInstance -Namespace $ns -ClassName $class -Property @{ ParentID='./Vendor/MSFT/Policy/Config'; InstanceID='SharedPC'; SetEduPolicies=$true } | Out-Null
+} elseif (-not [bool]$instance.SetEduPolicies) {
+  Set-CimInstance -CimInstance $instance -Property @{ SetEduPolicies=$true } | Out-Null
+}
+$verify=Get-CimInstance -Namespace $ns -ClassName $class -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($null -eq $verify -or -not [bool]$verify.SetEduPolicies) { throw 'SetEduPolicies did not verify as enabled' }`, quotedBackup)
+	return runPowerShell(script, 30*time.Second)
+}
+
+// RestoreProCompatibility returns SetEduPolicies to its pre-W:ID value. The
+// SharedPC provider owns the associated policy cleanup; W:ID never enables full
+// shared-PC mode, account cleanup, power policy, or storage restrictions.
+func RestoreProCompatibility() error {
+	quotedBackup := strings.ReplaceAll(paths.ProCompatibilityBackupFile(), "'", "''")
+	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
+$ProgressPreference='SilentlyContinue'
+$ns='root\cimv2\mdm\dmmap'
+$class='MDM_SharedPC'
+$backup='%s'
+if (-not (Test-Path -LiteralPath $backup)) { return }
+$record=Get-Content -LiteralPath $backup -Raw | ConvertFrom-Json
+$target=[bool]$record.Enabled
+$existed=[bool]$record.Existed
+$instance=Get-CimInstance -Namespace $ns -ClassName $class -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($null -eq $instance) {
+  if ($target) { throw 'the previous SetEduPolicies state was enabled, but the SharedPC instance is missing' }
+  return
+}
+if ([bool]$instance.SetEduPolicies -ne $target) {
+  Set-CimInstance -CimInstance $instance -Property @{ SetEduPolicies=$target } | Out-Null
+}
+if (-not $existed) {
+  $verify=Get-CimInstance -Namespace $ns -ClassName $class -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($null -eq $verify -or [bool]$verify.SetEduPolicies) { throw 'SetEduPolicies cleanup did not verify' }
+  return
+}
+$verify=Get-CimInstance -Namespace $ns -ClassName $class -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($null -eq $verify -or [bool]$verify.SetEduPolicies -ne $target) { throw 'SetEduPolicies rollback did not verify' }`, quotedBackup)
+	return runPowerShell(script, 30*time.Second)
+}
+
+// RestoreDevicePolicies performs every LocalSystem-only rollback as one
+// serialized service job so uninstall cannot race a queued refresh.
+func RestoreDevicePolicies() error {
+	return errors.Join(RestoreMDMBridge(), RestoreProCompatibility())
 }
 
 // RestoreMDMBridge rolls back the LocalSystem-only Personalization CSP value.
@@ -145,6 +247,7 @@ if ($null -eq $instance) {
 func RestoreMDMBridge() error {
 	quotedBackup := strings.ReplaceAll(paths.MDMBackupFile(), "'", "''")
 	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
+$ProgressPreference='SilentlyContinue'
 $ns='root\cimv2\mdm\dmmap'
 $class='MDM_Personalization'
 $backup='%s'
@@ -154,18 +257,32 @@ $instance=Get-CimInstance -Namespace $ns -ClassName $class -ErrorAction Silently
 if ($null -eq $instance) { return }
 $current=[string]$instance.LockScreenImageUrl
 if ($current -notmatch '%s') { return }
-if ([bool]$record.Existed) {
-  Set-CimInstance -CimInstance $instance -Property @{ LockScreenImageUrl=[string]$record.Url } | Out-Null
-} elseif ([string]::IsNullOrEmpty([string]$instance.DesktopImageUrl)) {
-  Remove-CimInstance -CimInstance $instance
+$previousUrl=[string]$record.Url
+$hadLockScreenUrl=[bool]$record.Existed -and -not [string]::IsNullOrWhiteSpace($previousUrl)
+if ($hadLockScreenUrl) {
+  Set-CimInstance -CimInstance $instance -Property @{ LockScreenImageUrl=$previousUrl } | Out-Null
 } else {
+  # DMWmiBridge accepts a null leaf value as the CSP Delete operation. The
+  # Personalization class itself is a singleton and rejects Remove-CimInstance
+  # on current Windows 11 builds; keeping its empty shell also preserves any
+  # unrelated DesktopImageUrl value.
   Set-CimInstance -CimInstance $instance -Property @{ LockScreenImageUrl=$null } | Out-Null
+}
+$verify=Get-CimInstance -Namespace $ns -ClassName $class -ErrorAction SilentlyContinue | Where-Object { $_.ParentID -eq './Vendor/MSFT' -and $_.InstanceID -eq 'Personalization' } | Select-Object -First 1
+if ($hadLockScreenUrl) {
+  if ($null -eq $verify -or [string]$verify.LockScreenImageUrl -ne $previousUrl) { throw 'Personalization CSP rollback did not verify' }
+} elseif ($null -ne $verify -and -not [string]::IsNullOrEmpty([string]$verify.LockScreenImageUrl)) {
+  throw 'Personalization CSP cleanup did not verify'
 }`, quotedBackup, ownedMDMImagePattern)
+	return runPowerShell(script, 30*time.Second)
+}
+
+func runPowerShell(script string, timeout time.Duration) error {
 	powershell := filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
 	if _, err := os.Stat(powershell); err != nil {
 		powershell = "powershell.exe"
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodePowerShell(script))
 	cmd.SysProcAttr = hiddenProcessAttributes()
@@ -181,6 +298,74 @@ if ([bool]$record.Existed) {
 		return fmt.Errorf("%s", message)
 	}
 	return nil
+}
+
+func stageMDMImage(source string) (string, error) {
+	if err := os.MkdirAll(paths.CSPImageDir(), 0o755); err != nil {
+		return "", err
+	}
+	destination := filepath.Join(paths.CSPImageDir(), filepath.Base(source))
+	if _, err := os.Stat(destination); err == nil {
+		return destination, nil
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	b, err := os.ReadFile(source)
+	if err != nil {
+		return "", err
+	}
+	temporary := destination + ".tmp"
+	if err := os.WriteFile(temporary, b, 0o644); err != nil {
+		return "", err
+	}
+	if err := os.Rename(temporary, destination); err != nil {
+		_ = os.Remove(temporary)
+		return "", err
+	}
+	return destination, nil
+}
+
+func cleanupStagedMDMImages(current string, keep int) {
+	entries, err := os.ReadDir(paths.CSPImageDir())
+	if err != nil {
+		return
+	}
+	type candidate struct {
+		path string
+		mod  time.Time
+	}
+	files := make([]candidate, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".jpg") {
+			continue
+		}
+		if info, err := entry.Info(); err == nil {
+			files = append(files, candidate{path: filepath.Join(paths.CSPImageDir(), entry.Name()), mod: info.ModTime()})
+		}
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].mod.After(files[j].mod) })
+	retained := 0
+	for _, file := range files {
+		if samePath(file.path, current) {
+			continue
+		}
+		if retained < keep-1 {
+			retained++
+			continue
+		}
+		_ = os.Remove(file.path)
+	}
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func samePath(a, b string) bool {
+	aAbs, errA := filepath.Abs(a)
+	bAbs, errB := filepath.Abs(b)
+	return errA == nil && errB == nil && strings.EqualFold(filepath.Clean(aAbs), filepath.Clean(bAbs))
 }
 
 func RefreshLockApp() (bool, error) {
@@ -332,7 +517,7 @@ func encodePowerShell(script string) string {
 func compactOutput(value string) string {
 	value = strings.Join(strings.Fields(value), " ")
 	if len(value) > 500 {
-		return value[:497] + "..."
+		return "..." + value[len(value)-497:]
 	}
 	return value
 }

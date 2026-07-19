@@ -15,9 +15,11 @@ Set `preset: custom` to tune individual fields. Hostname and the timezone-qualif
 ```yaml
 # Wallpaper Identity (W:ID) power-user configuration.
 # Hostname and the Generated at timestamp are always shown.
+# Windows Pro compatibility uses Microsoft's SetEduPolicies switch.
 # Set preset to custom after changing individual show values.
 preset: custom
 refresh_minutes: 5
+enable_pro_compatibility: true
 base_image: "C:\\Windows\\Web\\Wallpaper\\Windows\\img0.jpg"
 width: 0
 height: 0
@@ -43,6 +45,7 @@ show:
 |---|---|
 | `preset` | `identity`, `balanced`, `operations`, or `custom` |
 | `refresh_minutes` | Timer interval from 1 to 1440 minutes; restart the service after changing it |
+| `enable_pro_compatibility` | On Pro, enable Microsoft's `SetEduPolicies` requirement; defaults to `true` and disables tips, advertising ID, and consumer experiences. It does not enable Shared PC mode, account cleanup, kiosk, power, or storage settings. |
 | `base_image` | Optional absolute path to a local JPEG or PNG |
 | `width`, `height` | Output dimensions; leave both `0` for current display size, or set both between 800×600 and 7680×4320 |
 | `show.os` | Windows product and release |

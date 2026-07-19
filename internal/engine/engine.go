@@ -19,15 +19,16 @@ import (
 )
 
 type Status struct {
-	Version          string                  `json:"version"`
-	Reason           string                  `json:"reason"`
-	Success          bool                    `json:"success"`
-	Error            string                  `json:"error,omitempty"`
-	ImagePath        string                  `json:"image_path,omitempty"`
-	EditionSupported bool                    `json:"edition_supported"`
-	Snapshot         sysinfo.Snapshot        `json:"snapshot"`
-	Apply            loginscreen.ApplyResult `json:"apply"`
-	CompletedAt      time.Time               `json:"completed_at"`
+	Version                  string                  `json:"version"`
+	Reason                   string                  `json:"reason"`
+	Success                  bool                    `json:"success"`
+	Error                    string                  `json:"error,omitempty"`
+	ImagePath                string                  `json:"image_path,omitempty"`
+	EditionSupported         bool                    `json:"edition_supported"`
+	EditionNativelySupported bool                    `json:"edition_natively_supported"`
+	Snapshot                 sysinfo.Snapshot        `json:"snapshot"`
+	Apply                    loginscreen.ApplyResult `json:"apply"`
+	CompletedAt              time.Time               `json:"completed_at"`
 }
 
 type Engine struct{ Logger *log.Logger }
@@ -42,9 +43,11 @@ func (e *Engine) Refresh(reason string) (Status, error) {
 		return e.fail(reason, Status{}, fmt.Errorf("load config: %w", err))
 	}
 	snapshot := sysinfo.Gather()
+	nativeSupported := sysinfo.SupportsMachineLockScreenPolicy(snapshot.Edition)
+	professional := sysinfo.IsProfessionalEdition(snapshot.Edition)
 	status := Status{
 		Version: buildinfo.Version, Reason: reason, Snapshot: snapshot,
-		EditionSupported: sysinfo.SupportsMachineLockScreenPolicy(snapshot.Edition),
+		EditionNativelySupported: nativeSupported,
 	}
 	stamp := snapshot.RefreshedAt.UTC().Format("20060102T150405.000000000")
 	imagePath := filepath.Join(paths.ImageDir(), "machine-status-"+stamp+".jpg")
@@ -52,9 +55,19 @@ func (e *Engine) Refresh(reason string) (Status, error) {
 		return e.fail(reason, status, fmt.Errorf("render image: %w", err))
 	}
 	status.ImagePath = imagePath
-	status.Apply = loginscreen.Apply(imagePath)
-	if !status.Apply.GroupPolicyApplied && !status.Apply.MDMBridgeApplied {
-		return e.fail(reason, status, fmt.Errorf("Windows rejected both lock-screen policy methods"))
+	status.Apply = loginscreen.Apply(imagePath, loginscreen.ApplyOptions{
+		ProfessionalEdition: professional, EnableProCompatibility: cfg.EnableProCompatibility,
+	})
+	status.EditionSupported = nativeSupported || (professional && status.Apply.ProCompatibilityApplied)
+	effective := effectivePolicyApplied(nativeSupported, professional, cfg.EnableProCompatibility, status.Apply)
+	if !effective {
+		message := "Windows did not confirm an effective lock-screen policy"
+		if professional && !cfg.EnableProCompatibility {
+			message = "Windows Pro requires enable_pro_compatibility: true"
+		} else if len(status.Apply.Warnings) > 0 {
+			message += ": " + status.Apply.Warnings[len(status.Apply.Warnings)-1]
+		}
+		return e.fail(reason, status, fmt.Errorf("%s", message))
 	}
 	status.Success = true
 	status.CompletedAt = time.Now()
@@ -63,13 +76,20 @@ func (e *Engine) Refresh(reason string) (Status, error) {
 	}
 	cleanupImages(imagePath, 4)
 	e.logf("refresh complete in %s: %s", time.Since(started).Round(time.Millisecond), imagePath)
-	if !status.EditionSupported {
-		e.logf("warning: edition %q does not guarantee machine lock-screen policy support", snapshot.Edition)
-	}
 	for _, warning := range status.Apply.Warnings {
 		e.logf("warning: %s", warning)
 	}
 	return status, nil
+}
+
+func effectivePolicyApplied(nativeSupported, professional, proCompatibilityConfigured bool, apply loginscreen.ApplyResult) bool {
+	if nativeSupported {
+		return apply.GroupPolicyApplied || apply.MDMBridgeApplied
+	}
+	if professional && proCompatibilityConfigured {
+		return apply.ProCompatibilityApplied && apply.MDMBridgeApplied
+	}
+	return false
 }
 
 func (e *Engine) RenderPreview(path string) (Status, error) {
@@ -78,9 +98,11 @@ func (e *Engine) RenderPreview(path string) (Status, error) {
 		return Status{}, err
 	}
 	snapshot := sysinfo.Gather()
+	nativeSupported := sysinfo.SupportsMachineLockScreenPolicy(snapshot.Edition)
 	status := Status{
 		Version: buildinfo.Version, Reason: "preview", Snapshot: snapshot,
-		EditionSupported: sysinfo.SupportsMachineLockScreenPolicy(snapshot.Edition), ImagePath: path,
+		EditionSupported:         nativeSupported || (sysinfo.IsProfessionalEdition(snapshot.Edition) && cfg.EnableProCompatibility),
+		EditionNativelySupported: nativeSupported, ImagePath: path,
 		CompletedAt: time.Now(), Success: true,
 	}
 	if err := overlay.RenderToFile(path, snapshot, cfg); err != nil {

@@ -181,7 +181,7 @@ func InstallWithOptionsResult(progress ProgressFunc, options InstallOptions) (Op
 	}, 86400)
 	_ = service.SetRecoveryActionsOnNonCrashFailures(true)
 
-	progress(70, "Adding Apps & features registration…")
+	progress(65, "Adding Apps & features registration…")
 	if err := registerUninstall(); err != nil {
 		return result, fmt.Errorf("register uninstaller: %w", err)
 	}
@@ -197,10 +197,10 @@ func InstallWithOptionsResult(progress ProgressFunc, options InstallOptions) (Op
 	if err := waitForService(service, svc.Running, 75*time.Second); err != nil {
 		return result, err
 	}
-	if err := waitForFirstRefresh(60*time.Second, refreshStarted); err != nil {
+	if err := waitForFirstRefresh(120*time.Second, refreshStarted); err != nil {
 		return result, err
 	}
-	progress(100, "Installed. The pre-login image is active.")
+	progress(100, "Installed. Windows accepted the pre-login image policy.")
 	return result, nil
 }
 
@@ -225,12 +225,12 @@ func UninstallResult(progress ProgressFunc, removeData bool) (OperationResult, e
 		return result, err
 	}
 	defer release()
-	progress(5, "Restoring the LocalSystem personalization policy...")
+	progress(5, "Restoring LocalSystem device policies...")
 	mdmRestoreErr := requestMDMRestore()
 	if mdmRestoreErr != nil {
-		return result, fmt.Errorf("restore MDM policy before removal: %w", mdmRestoreErr)
+		return result, fmt.Errorf("restore device policies before removal: %w", mdmRestoreErr)
 	}
-	progress(10, "Stopping the Wallpaper Identity service…")
+	progress(15, "Stopping the Wallpaper Identity service…")
 	if err := removeService(paths.ServiceName); err != nil {
 		return result, err
 	}
@@ -241,10 +241,13 @@ func UninstallResult(progress ProgressFunc, removeData bool) (OperationResult, e
 	// it cannot reapply W:ID after the authoritative backup is consumed. The
 	// "ok" marker lets a retry recognize this completed state if cleanup below
 	// is interrupted after service deletion.
-	for _, path := range []string{paths.LegacyMDMRestoreMarker(), paths.LegacyMDMBackupFile(), paths.MDMBackupFile(), paths.MDMRestoreMarker()} {
+	for _, path := range []string{paths.LegacyMDMRestoreMarker(), paths.LegacyMDMBackupFile(), paths.MDMBackupFile(), paths.ProCompatibilityBackupFile(), paths.MDMRestoreMarker()} {
 		if err := removeFileIfExists(path); err != nil {
 			return result, fmt.Errorf("consume restored MDM recovery state: %w", err)
 		}
+	}
+	if err := os.RemoveAll(paths.CSPImageDir()); err != nil {
+		return result, fmt.Errorf("remove the Personalization CSP image cache: %w", err)
 	}
 	progress(35, "Removing legacy scheduled tasks…")
 	removeScheduledTask("BgStatusServiceBoot")
@@ -300,7 +303,7 @@ func requestMDMRestore() error {
 	serviceName, markerPath, err := selectMDMRestoreTarget(
 		isServicePresent(paths.ServiceName),
 		isServicePresent(paths.LegacyServiceName),
-		fileExists(paths.MDMBackupFile()),
+		fileExists(paths.MDMBackupFile()) || fileExists(paths.ProCompatibilityBackupFile()),
 		fileExists(paths.LegacyMDMBackupFile()),
 		restoreMarkerCompleted(paths.MDMRestoreMarker()) || restoreMarkerCompleted(paths.LegacyMDMRestoreMarker()),
 	)
@@ -321,7 +324,7 @@ func selectMDMRestoreTarget(currentService, legacyService, currentBackup, legacy
 		if completed {
 			return "", "", nil
 		}
-		return "", "", errors.New("cannot restore the LocalSystem MDM policy because the service is missing; the policy backup will be retained")
+		return "", "", errors.New("cannot restore the LocalSystem device policies because the service is missing; the policy backups will be retained")
 	}
 	return "", "", nil
 }
@@ -340,7 +343,7 @@ func requestMDMRestoreFor(serviceName, markerPath string) error {
 	service, err := manager.OpenService(serviceName)
 	if err != nil {
 		if errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
-			return fmt.Errorf("service %s disappeared before the LocalSystem MDM policy could be restored", serviceName)
+			return fmt.Errorf("service %s disappeared before the LocalSystem device policies could be restored", serviceName)
 		}
 		return err
 	}
@@ -365,10 +368,11 @@ func requestMDMRestoreFor(serviceName, markerPath string) error {
 	if _, err := service.Control(svc.ParamChange); err != nil {
 		return err
 	}
-	// A restore is serialized behind any in-flight refresh. A refresh may spend
-	// about 40 seconds in bounded MDM/LockApp subprocesses, and the restore has
-	// its own 30-second bound, so allow a conservative RMM-safe margin.
-	deadline := time.Now().Add(120 * time.Second)
+	// A restore is serialized behind any in-flight refresh. A Windows Pro
+	// refresh may spend about 80 seconds in bounded compatibility, MDM, and
+	// LockApp subprocesses. The two restore operations then have independent
+	// 30-second bounds, so allow a conservative RMM-safe margin.
+	deadline := time.Now().Add(180 * time.Second)
 	for time.Now().Before(deadline) {
 		if result, err := os.ReadFile(markerPath); err == nil {
 			message := strings.TrimSpace(string(result))
@@ -379,7 +383,7 @@ func requestMDMRestoreFor(serviceName, markerPath string) error {
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	return errors.New("timed out waiting for LocalSystem MDM policy cleanup")
+	return errors.New("timed out waiting for LocalSystem device-policy cleanup")
 }
 
 func fileExists(path string) bool {
@@ -542,7 +546,7 @@ func removeService(name string) error {
 			service.Close()
 			return fmt.Errorf("stop service %s: %w", name, err)
 		}
-		if err := waitForService(service, svc.Stopped, 75*time.Second); err != nil {
+		if err := waitForService(service, svc.Stopped, 150*time.Second); err != nil {
 			service.Close()
 			return fmt.Errorf("wait for service %s to stop: %w", name, err)
 		}
@@ -712,7 +716,7 @@ func mergeLegacyDirectory(source, destination, sourceRoot string) error {
 
 func legacyFileIsAuthoritative(relative string) bool {
 	relative = strings.ToLower(filepath.Clean(relative))
-	return relative == "config.yml" || relative == "policy-backup.json" || relative == "mdm-policy-backup.json"
+	return relative == "config.yml" || relative == "policy-backup.json" || relative == "mdm-policy-backup.json" || relative == "pro-compatibility-backup.json"
 }
 
 func availableMigrationPath(path, suffix string) (string, error) {

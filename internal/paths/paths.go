@@ -54,12 +54,22 @@ func LegacyDataDir() string {
 	return filepath.Join(base, LegacyProductName)
 }
 
-func ImageDir() string         { return filepath.Join(DataDir(), "backgrounds") }
+func ImageDir() string { return filepath.Join(DataDir(), "backgrounds") }
+func CSPImageDir() string {
+	base := os.Getenv("ProgramData")
+	if base == "" {
+		base = `C:\ProgramData`
+	}
+	return filepath.Join(base, "WallpaperIdentityCSP")
+}
 func ConfigFile() string       { return filepath.Join(DataDir(), "config.yml") }
 func StatusFile() string       { return filepath.Join(DataDir(), "status.json") }
 func LogFile() string          { return filepath.Join(DataDir(), "WallpaperIdentity.log") }
 func PolicyBackupFile() string { return filepath.Join(DataDir(), "policy-backup.json") }
 func MDMBackupFile() string    { return filepath.Join(DataDir(), "mdm-policy-backup.json") }
+func ProCompatibilityBackupFile() string {
+	return filepath.Join(DataDir(), "pro-compatibility-backup.json")
+}
 func MDMRestoreMarker() string { return filepath.Join(DataDir(), "mdm-policy-restore.txt") }
 
 func LegacyConfigFile() string       { return filepath.Join(LegacyDataDir(), "config.yml") }

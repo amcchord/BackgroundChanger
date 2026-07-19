@@ -291,6 +291,9 @@ func execute(options commandOptions) (commandResult, error) {
 		if !status.Success {
 			return result, fail(exitUnhealthy, "last refresh failed: %s", status.Error)
 		}
+		if !status.EditionSupported {
+			return result, fail(exitUnhealthy, "last status does not confirm an effective lock-screen policy; run repair or refresh with the current release")
+		}
 		cfg, err := config.Load(paths.ConfigFile())
 		if err == nil {
 			staleAfter := 2*time.Duration(cfg.RefreshMinutes)*time.Minute + time.Minute
@@ -298,12 +301,7 @@ func execute(options commandOptions) (commandResult, error) {
 				return result, fail(exitUnhealthy, "last refresh is stale (%s old; threshold %s)", age.Round(time.Second), staleAfter)
 			}
 		}
-		if status.EditionSupported {
-			result.Message = "Wallpaper Identity is installed and healthy."
-		} else {
-			result.Message = "Wallpaper Identity is healthy, but this Windows edition does not guarantee machine lock-screen policy support."
-			result.Warnings = append(result.Warnings, "Windows edition does not guarantee machine lock-screen policy support")
-		}
+		result.Message = "Wallpaper Identity is installed and healthy."
 		return result, nil
 	case "refresh":
 		if !setup.IsAdministrator() {
@@ -446,7 +444,7 @@ func parseCommand(args []string) (commandOptions, error) {
 		}
 	case "service":
 		if len(arguments) != 0 {
-			return options, errors.New("service mode takes no arguments")
+			return options, fmt.Errorf("%s mode takes no arguments", name)
 		}
 		options.Headless = true
 	default:
