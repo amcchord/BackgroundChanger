@@ -3,6 +3,7 @@ package ui
 
 import (
 	"fmt"
+	"image"
 	"os"
 	"time"
 	"unsafe"
@@ -17,6 +18,13 @@ import (
 	"github.com/lxn/walk"
 	. "github.com/lxn/walk/declarative"
 	"github.com/lxn/win"
+	"golang.org/x/image/draw"
+)
+
+const (
+	defaultPresetIndex  = 1
+	presetPreviewWidth  = 238
+	presetPreviewHeight = 134
 )
 
 type presetChoice struct {
@@ -51,34 +59,54 @@ func Main() error {
 		{Name: config.PresetBalanced, Title: "Balanced", Description: "Hardware, capacity and health", Preview: previews[config.PresetBalanced]},
 		{Name: config.PresetOperations, Title: "Operations", Description: "Resources, restart and failures", Preview: previews[config.PresetOperations]},
 	}
-	presetLabels := []string{"Identity — find the machine", "Balanced — everyday status", "Operations — service health"}
 
-	var window *walk.MainWindow
-	var stateLabel, detailLabel *walk.Label
+	var window *walk.Dialog
+	var stateLabel, detailLabel, selectionLabel *walk.Label
 	var installButton, uninstallButton, closeButton *walk.PushButton
-	var presetBox *walk.ComboBox
+	presetButtons := make([]*walk.PushButton, len(choices))
 	working := false
 	installed := setup.IsInstalled()
 	legacyInstalled := setup.IsLegacyInstalled()
+	selectedPreset := defaultPresetIndex
+	presetChanged := false
+	if installed {
+		selectedPreset = -1
+		if current, loadErr := config.Load(paths.ConfigFile()); loadErr == nil {
+			selectedPreset = presetIndex(choices, current.Preset)
+		}
+	}
 	state, detail := installationSummary(installed, legacyInstalled)
 	platformNote := "Native policy support: Windows Enterprise, Education, IoT Enterprise, and Server."
 	if sysinfo.IsProfessionalEdition(sysinfo.CurrentEdition()) {
 		platformNote = "Windows Pro: compatibility turns off tips, advertising ID, and consumer experiences."
 	}
+	selectPreset := func(index int) {
+		if index < 0 || index >= len(choices) {
+			return
+		}
+		selectedPreset = index
+		presetChanged = installed
+		updatePresetButtons(presetButtons, choices, selectedPreset)
+		if selectionLabel != nil {
+			selectionLabel.SetText(presetSelectionText(choices, selectedPreset, installed, presetChanged))
+		}
+	}
 
-	err = (MainWindow{
-		AssignTo: &window,
-		Title:    "Wallpaper Identity Setup",
-		Icon:     appIcon,
-		MinSize:  Size{Width: 810, Height: 555},
-		Size:     Size{Width: 840, Height: 575},
-		Layout:   VBox{Margins: Margins{Left: 20, Top: 16, Right: 20, Bottom: 14}, Spacing: 6},
+	err = (Dialog{
+		AssignTo:      &window,
+		Title:         "Wallpaper Identity Setup",
+		Icon:          appIcon,
+		FixedSize:     true,
+		Size:          Size{Width: 900, Height: 630},
+		Layout:        VBox{Margins: Margins{Left: 24, Top: 20, Right: 24, Bottom: 18}, Spacing: 10},
+		DefaultButton: &installButton,
+		CancelButton:  &closeButton,
 		Children: []Widget{
 			Composite{Layout: HBox{Spacing: 12}, Children: []Widget{
 				ImageView{Image: logoBitmap, Mode: ImageViewModeShrink, MinSize: Size{Width: 64, Height: 64}, MaxSize: Size{Width: 64, Height: 64}},
 				Composite{Layout: VBox{Spacing: 1}, Children: []Widget{
 					Label{Text: "Wallpaper Identity", Font: Font{Family: "Segoe UI", PointSize: 23, Bold: true}},
-					Label{Text: "W:ID  •  Machine identity and health, visible before sign-in", Font: Font{Family: "Segoe UI", PointSize: 11}},
+					Label{Text: "See this machine's identity and health before anyone signs in", Font: Font{Family: "Segoe UI", PointSize: 11}},
 				}},
 			}},
 			GroupBox{
@@ -90,38 +118,38 @@ func Main() error {
 				},
 			},
 			GroupBox{
-				Title:  "Choose a starting layout",
-				Layout: VBox{Margins: Margins{Left: 12, Top: 9, Right: 12, Bottom: 9}, Spacing: 6},
+				Title:  "Choose what to show",
+				Layout: VBox{Margins: Margins{Left: 12, Top: 10, Right: 12, Bottom: 10}, Spacing: 8},
 				Children: []Widget{
-					Composite{Layout: HBox{Spacing: 12}, Children: presetPreviewWidgets(choices)},
-					Composite{Layout: HBox{Spacing: 8}, Children: []Widget{
-						Label{Text: "Install preset:", Font: Font{Family: "Segoe UI Semibold", PointSize: 9}},
-						ComboBox{AssignTo: &presetBox, Model: presetLabels, CurrentIndex: 1, Enabled: !installed, MinSize: Size{Width: 230}},
-						Label{Text: "Advanced: edit config.yml in " + paths.DataDir() + ".", Font: Font{Family: "Segoe UI", PointSize: 8}},
-					}},
+					Label{Text: "Click a preview to select its information mix. Hostname and Generated at are always included.", Font: Font{Family: "Segoe UI", PointSize: 9}},
+					Composite{Layout: HBox{Spacing: 12}, Children: presetPreviewWidgets(choices, presetButtons, selectedPreset, selectPreset)},
+					Label{AssignTo: &selectionLabel, Text: presetSelectionText(choices, selectedPreset, installed, presetChanged), Font: Font{Family: "Segoe UI Semibold", PointSize: 9}},
+					Label{Text: "Power users can tune every field later in " + paths.ConfigFile(), Font: Font{Family: "Segoe UI", PointSize: 8}},
 				},
 			},
 			Label{
-				Text: "One automatic LocalSystem service renders at boot, after session changes, and every five minutes. The Generated at timestamp is always visible.",
+				Text: "A small LocalSystem service updates the image at boot, after session changes, and every five minutes.",
 				Font: Font{Family: "Segoe UI", PointSize: 9},
 			},
 			Label{Text: platformNote, Font: Font{Family: "Segoe UI", PointSize: 8}},
 			VSpacer{},
+			HSeparator{},
 			Composite{
-				Layout: HBox{Spacing: 10},
+				Layout: HBox{Spacing: 8},
 				Children: []Widget{
-					PushButton{AssignTo: &installButton, Text: installText(installed)},
-					PushButton{AssignTo: &uninstallButton, Text: "Uninstall", Enabled: installed && !legacyInstalled},
+					Label{Text: fmt.Sprintf("W:ID  •  Version %s", buildinfo.Version), Font: Font{Family: "Segoe UI", PointSize: 8}},
 					HSpacer{},
-					PushButton{AssignTo: &closeButton, Text: "Close", OnClicked: func() { window.Close() }},
+					PushButton{AssignTo: &uninstallButton, Text: "Uninstall", Enabled: installed && !legacyInstalled, MinSize: Size{Width: 96}},
+					PushButton{AssignTo: &closeButton, Text: "Close", MinSize: Size{Width: 96}, OnClicked: func() { window.Cancel() }},
+					PushButton{AssignTo: &installButton, Text: installText(installed), MinSize: Size{Width: 120}},
 				},
 			},
-			Label{Text: fmt.Sprintf("W:ID  •  Version %s", buildinfo.Version), Font: Font{Family: "Segoe UI", PointSize: 8}},
 		},
-	}).Create()
+	}).Create(nil)
 	if err != nil {
 		return err
 	}
+	_ = installButton.SetFocus()
 	window.Closing().Attach(func(canceled *bool, _ walk.CloseReason) {
 		if working {
 			*canceled = true
@@ -131,10 +159,11 @@ func Main() error {
 
 	run := func(uninstall bool) {
 		preset := ""
-		if !uninstall && !setup.IsInstalled() {
-			index := presetBox.CurrentIndex()
+		applyPreset := !uninstall && (!setup.IsInstalled() || presetChanged)
+		if applyPreset {
+			index := selectedPreset
 			if index < 0 || index >= len(choices) {
-				index = 1
+				index = defaultPresetIndex
 			}
 			preset = choices[index].Name
 		}
@@ -150,13 +179,13 @@ func Main() error {
 				walk.MsgBox(window, "Wallpaper Identity Setup", "Administrator elevation failed:\n\n"+err.Error(), walk.MsgBoxIconError)
 				return
 			}
-			window.Close()
+			window.Cancel()
 			return
 		}
 		installButton.SetEnabled(false)
 		uninstallButton.SetEnabled(false)
 		closeButton.SetEnabled(false)
-		presetBox.SetEnabled(false)
+		setPresetButtonsEnabled(presetButtons, false)
 		working = true
 		stateLabel.SetText("Working…")
 		detailLabel.SetText("Preparing the requested change.")
@@ -173,19 +202,24 @@ func Main() error {
 			window.Synchronize(func() {
 				working = false
 				installedNow := setup.IsInstalled()
+				installed = installedNow
 				installButton.SetText(installText(installedNow))
 				installButton.SetEnabled(true)
 				uninstallButton.SetEnabled(installedNow && !setup.IsLegacyInstalled())
 				closeButton.SetEnabled(true)
-				presetBox.SetEnabled(!installedNow)
+				setPresetButtonsEnabled(presetButtons, true)
 				if opErr != nil {
+					presetChanged = applyPreset && installedNow
 					stateLabel.SetText("The operation could not be completed")
 					detailLabel.SetText(opErr.Error())
+					selectionLabel.SetText(presetSelectionText(choices, selectedPreset, installedNow, presetChanged))
 					walk.MsgBox(window, "Wallpaper Identity Setup", opErr.Error(), walk.MsgBoxIconError)
 				} else {
+					presetChanged = false
 					newState, newDetail := installationSummary(installedNow, setup.IsLegacyInstalled())
 					stateLabel.SetText(newState)
 					detailLabel.SetText(newDetail)
+					selectionLabel.SetText(presetSelectionText(choices, selectedPreset, installedNow, presetChanged))
 				}
 			})
 		}()
@@ -200,16 +234,24 @@ func Main() error {
 	return nil
 }
 
-func presetPreviewWidgets(choices []presetChoice) []Widget {
+func presetPreviewWidgets(choices []presetChoice, buttons []*walk.PushButton, selected int, selectPreset func(int)) []Widget {
 	widgets := make([]Widget, 0, len(choices))
-	for _, choice := range choices {
+	for index, choice := range choices {
+		index := index
 		choice := choice
 		widgets = append(widgets, Composite{
-			Layout:  VBox{Spacing: 4},
-			MinSize: Size{Width: 215},
+			Layout:  VBox{Spacing: 3},
+			MinSize: Size{Width: 246},
 			Children: []Widget{
-				Label{Text: choice.Title, Font: Font{Family: "Segoe UI Semibold", PointSize: 10}},
-				ImageView{Image: choice.Preview, Mode: ImageViewModeShrink, MinSize: Size{Width: 210, Height: 118}, MaxSize: Size{Width: 210, Height: 118}},
+				PushButton{
+					AssignTo:       &buttons[index],
+					Text:           presetButtonText(choice, index == selected),
+					Image:          choice.Preview,
+					ImageAboveText: true,
+					MinSize:        Size{Width: 246, Height: 154},
+					ToolTipText:    "Select " + choice.Title + ": " + choice.Description,
+					OnClicked:      func() { selectPreset(index) },
+				},
 				Label{Text: choice.Description, Font: Font{Family: "Segoe UI", PointSize: 8}},
 			},
 		})
@@ -217,7 +259,59 @@ func presetPreviewWidgets(choices []presetChoice) []Widget {
 	return widgets
 }
 
-func centerInWorkArea(window *walk.MainWindow) {
+func presetButtonText(choice presetChoice, selected bool) string {
+	prefix := ""
+	if selected {
+		prefix = "✓  "
+	}
+	return prefix + choice.Title
+}
+
+func presetSelectionText(choices []presetChoice, selected int, installed, changed bool) string {
+	if selected < 0 || selected >= len(choices) {
+		if installed {
+			return "Current layout: Custom configuration. Select a preview to replace it."
+		}
+		selected = defaultPresetIndex
+		if selected < 0 || selected >= len(choices) {
+			return "Select a layout to continue."
+		}
+	}
+	prefix := "Selected"
+	if installed && changed {
+		prefix = "Selected for update"
+	} else if installed {
+		prefix = "Current layout"
+	}
+	return fmt.Sprintf("%s: %s — %s", prefix, choices[selected].Title, choices[selected].Description)
+}
+
+func presetIndex(choices []presetChoice, name string) int {
+	for index, choice := range choices {
+		if choice.Name == name {
+			return index
+		}
+	}
+	return -1
+}
+
+func updatePresetButtons(buttons []*walk.PushButton, choices []presetChoice, selected int) {
+	for index, button := range buttons {
+		if button != nil {
+			_ = button.SetText(presetButtonText(choices[index], index == selected))
+		}
+	}
+}
+
+func setPresetButtonsEnabled(buttons []*walk.PushButton, enabled bool) {
+	for _, button := range buttons {
+		if button != nil {
+			button.SetEnabled(enabled)
+		}
+	}
+}
+
+func centerInWorkArea(window walk.Window) {
 	const spiGetWorkArea = 0x0030
 	var workArea win.RECT
 	if !win.SystemParametersInfo(spiGetWorkArea, 0, unsafe.Pointer(&workArea), 0) {
@@ -232,6 +326,8 @@ func centerInWorkArea(window *walk.MainWindow) {
 }
 
 func createPresetPreviews() (map[string]walk.Image, error) {
+	dpi := primaryScreenDPI()
+	pixelWidth, pixelHeight := presetPreviewPixelSize(dpi)
 	snapshot := sysinfo.Snapshot{
 		Hostname: "LAB-RACK-07", OS: "Windows 11 Enterprise", Edition: "Enterprise", Version: "25H2", Build: "26200.6584",
 		CPU: "Intel Core i7 • 8 logical", GPU: "Display adapter", Memory: "3.2 / 8.0 GiB • 40%", Disk: "22.4 / 64.0 GiB • 35%",
@@ -252,7 +348,9 @@ func createPresetPreviews() (map[string]walk.Image, error) {
 			disposePreviews(result)
 			return nil, err
 		}
-		preview, err := walk.NewBitmapFromImage(img)
+		thumbnail := image.NewRGBA(image.Rect(0, 0, pixelWidth, pixelHeight))
+		draw.CatmullRom.Scale(thumbnail, thumbnail.Bounds(), img, img.Bounds(), draw.Over, nil)
+		preview, err := walk.NewBitmapFromImageForDPI(thumbnail, dpi)
 		if err != nil {
 			disposePreviews(result)
 			return nil, err
@@ -260,6 +358,26 @@ func createPresetPreviews() (map[string]walk.Image, error) {
 		result[name] = preview
 	}
 	return result, nil
+}
+
+func primaryScreenDPI() int {
+	hdc := win.GetDC(0)
+	if hdc == 0 {
+		return 96
+	}
+	defer win.ReleaseDC(0, hdc)
+	dpi := int(win.GetDeviceCaps(hdc, win.LOGPIXELSX))
+	if dpi < 96 {
+		return 96
+	}
+	return dpi
+}
+
+func presetPreviewPixelSize(dpi int) (int, int) {
+	if dpi < 96 {
+		dpi = 96
+	}
+	return walk.IntFrom96DPI(presetPreviewWidth, dpi), walk.IntFrom96DPI(presetPreviewHeight, dpi)
 }
 
 func disposePreviews(previews map[string]walk.Image) {
@@ -278,28 +396,33 @@ func RunOperation(title string, operation func(setup.ProgressFunc) error) error 
 		return err
 	}
 	defer appIcon.Dispose()
-	var window *walk.MainWindow
-	var statusLabel *walk.Label
+	var window *walk.Dialog
+	var statusLabel, detailLabel *walk.Label
 	var progressBar *walk.ProgressBar
 	var closeButton *walk.PushButton
-	err = (MainWindow{
-		AssignTo: &window,
-		Title:    title,
-		Icon:     appIcon,
-		MinSize:  Size{Width: 570, Height: 260},
-		Size:     Size{Width: 570, Height: 260},
-		Layout:   VBox{Margins: Margins{Left: 30, Top: 28, Right: 30, Bottom: 24}, Spacing: 14},
+	err = (Dialog{
+		AssignTo:      &window,
+		Title:         title,
+		Icon:          appIcon,
+		FixedSize:     true,
+		Size:          Size{Width: 610, Height: 300},
+		Layout:        VBox{Margins: Margins{Left: 30, Top: 26, Right: 30, Bottom: 22}, Spacing: 12},
+		DefaultButton: &closeButton,
+		CancelButton:  &closeButton,
 		Children: []Widget{
 			Label{Text: title, Font: Font{Family: "Segoe UI", PointSize: 20, Bold: true}},
-			Label{AssignTo: &statusLabel, Text: "Starting…", Font: Font{Family: "Segoe UI", PointSize: 10}},
+			Label{AssignTo: &statusLabel, Text: "Starting…", Font: Font{Family: "Segoe UI Semibold", PointSize: 12}},
 			ProgressBar{AssignTo: &progressBar, MinValue: 0, MaxValue: 100},
+			Label{AssignTo: &detailLabel, Text: "Please wait while Windows applies and verifies the requested change.", Font: Font{Family: "Segoe UI", PointSize: 9}},
 			VSpacer{},
-			Composite{Layout: HBox{}, Children: []Widget{HSpacer{}, PushButton{AssignTo: &closeButton, Text: "Please wait…", Enabled: false, OnClicked: func() { window.Close() }}}},
+			HSeparator{},
+			Composite{Layout: HBox{}, Children: []Widget{HSpacer{}, PushButton{AssignTo: &closeButton, Text: "Please wait…", Enabled: false, MinSize: Size{Width: 100}, OnClicked: func() { window.Cancel() }}}},
 		},
-	}).Create()
+	}).Create(nil)
 	if err != nil {
 		return err
 	}
+	centerInWorkArea(window)
 	working := true
 	window.Closing().Attach(func(canceled *bool, _ walk.CloseReason) {
 		if working {
@@ -318,14 +441,26 @@ func RunOperation(title string, operation func(setup.ProgressFunc) error) error 
 			working = false
 			closeButton.SetText("Close")
 			closeButton.SetEnabled(true)
+			headline, detail := operationCompletionText(result)
+			statusLabel.SetText(headline)
+			detailLabel.SetText(detail)
 			if result != nil {
-				statusLabel.SetText(result.Error())
 				walk.MsgBox(window, title, result.Error(), walk.MsgBoxIconError)
+			} else {
+				progressBar.SetValue(100)
 			}
+			_ = closeButton.SetFocus()
 		})
 	}()
 	window.Run()
 	return result
+}
+
+func operationCompletionText(result error) (string, string) {
+	if result != nil {
+		return "Could not complete the operation", result.Error()
+	}
+	return "Done", "The requested change completed successfully. You can close this window."
 }
 
 func installationSummary(installed, legacyInstalled bool) (string, string) {

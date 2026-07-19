@@ -29,11 +29,15 @@ The layout reserves Windows 11's top-center clock area and Windows 10's lower-le
 2. Open it, choose a starting layout, and select **Install**.
 3. Approve the Windows administrator prompt.
 
-The W:ID installer is self-contained and works offline. It shows real rendered previews for **Identity**, **Balanced**, and **Operations**, then installs one automatic LocalSystem service and immediately generates the first background.
+The W:ID installer is self-contained and works offline. Click anywhere on a full-size rendered preview for **Identity**, **Balanced**, or **Operations** to select it; **Install** stays in the standard lower-right position. Setup then installs one automatic LocalSystem service and immediately generates the first background. Its blocking progress window finishes at 100% with an explicit **Done** state.
 
 For unattended deployment, the companion `WallpaperIdentityCLI.exe` provides strict, blocking `install`, `repair`, `upgrade`, `status`, `refresh`, `render`, and `uninstall` commands with JSON/result-file output and stable exit codes. See the [headless and RMM guide](docs/CLI.md).
 
-![Wallpaper Identity graphical installer](assets/screenshots/installer.png)
+![Wallpaper Identity clean-install window with three clickable layout previews and Install in the lower right](assets/screenshots/installer.png)
+
+![Wallpaper Identity installer with the full Operations preview selected](assets/screenshots/installer-selection.png)
+
+![Wallpaper Identity progress window at its final Done state](assets/screenshots/installer-done.png)
 
 Run the same executable again to repair, upgrade, or uninstall. W:ID is also registered in Windows **Apps & features**.
 
@@ -107,7 +111,7 @@ Requirements: Windows and Go 1.24 or newer.
 
 ```powershell
 go test ./...
-powershell -ExecutionPolicy Bypass -File .\build.ps1 -Version v4.0.2
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -Version v4.5.0
 ```
 
 Release output is written to `dist\WallpaperIdentitySetup.exe`, `dist\WallpaperIdentityCLI.exe`, and `dist\SHA256SUMS.txt`. Both offline binaries contain the service, renderer, fonts, W:ID icon, and Windows manifest; Setup uses the graphical Windows subsystem while CLI uses the console subsystem for reliable RMM waiting, stdout, and exit codes.

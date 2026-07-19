@@ -8,10 +8,22 @@ go test ./...
 go test -race ./internal/...
 go vet ./...
 git diff --check
-powershell -ExecutionPolicy Bypass -File .\build.ps1 -Version v4.0.2
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -Version v4.5.0
 ```
 
-Tests cover YAML validation, migration, and round-tripping; the guarded boot-refresh default and opt-out; stable Windows boot identity; authenticated-session, console-change, process, API-failure, and once-per-boot paths; v3-to-W:ID data migration; the three presets; the permanent generated timestamp; edition classification; policy ownership; space-free CSP image staging; PowerShell command encoding; service queue/drain behavior; snapshot formatting; and renderer dimensions.
+Tests cover YAML validation, migration, and round-tripping; the guarded boot-refresh default and opt-out; stable Windows boot identity; authenticated-session, console-change, process, API-failure, and once-per-boot paths; v3-to-W:ID data migration; the three presets; installer preset-selection and final Done-state copy; the permanent generated timestamp; edition classification; policy ownership; space-free CSP image staging; PowerShell command encoding; service queue/drain behavior; snapshot formatting; and renderer dimensions.
+
+## Installer UX validation for v4.5.0
+
+The final installer was inspected on the Windows host at 150% display scaling in clean-install and installed-maintenance modes. DPI-aware preview bitmaps filled their native selection wells in both modes. The following states were captured from the built Windows executable and committed as release evidence:
+
+- Clean install with Balanced selected and the default **Install** action in the lower right
+- Full-card click selection of Operations with visible selection text and check mark
+- Installed maintenance with the current layout retained until an explicit replacement is chosen
+- Active blocking progress with controls disabled
+- Successful completion at 100%, headed exactly **Done**, with **Close** focused in the lower right
+
+The image scaling helper is also unit tested at 96, 120, 144, and 192 DPI.
 
 ## VirtualBox release matrix
 

@@ -57,7 +57,7 @@ Example result:
   "reboot_required": false,
   "success": true,
   "exit_code": 0,
-  "version": "v4.0.2",
+  "version": "v4.5.0",
   "commit": "abc1234",
   "installed": true,
   "legacy_installed": false,
