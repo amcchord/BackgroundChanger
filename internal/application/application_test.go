@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -32,9 +33,11 @@ func TestParseCommand(t *testing.T) {
 		{name: "slash JSON value", args: []string{"status", "/json=true"}, want: commandOptions{Name: "status", JSON: true, Headless: true}},
 		{name: "background appearance", args: []string{"install", "--quiet", "--background-color", "TEAL", "--background-mode", "LIGHT", "--use-colors"}, want: commandOptions{Name: "install", BackgroundColor: "teal", BackgroundMode: "light", UseColors: true, Quiet: true, Headless: true}},
 		{name: "background image slash aliases", args: []string{"/install", "/background-image=C:\\RMM\\room.png", "/background-mode=dark"}, want: commandOptions{Name: "install", BackgroundImage: `C:\RMM\room.png`, BackgroundMode: "dark"}},
+		{name: "current background slash alias", args: []string{"/install", "/use-current-background"}, want: commandOptions{Name: "install", UseCurrentBackground: true}},
 		{name: "preset and config conflict", args: []string{"install", "--preset", "identity", "--config", "config.yml"}, wantErr: "cannot be combined"},
 		{name: "config and background conflict", args: []string{"install", "--config", "config.yml", "--background-color", "blue"}, wantErr: "cannot be combined"},
 		{name: "image and colors conflict", args: []string{"install", "--background-image", "room.png", "--use-colors"}, wantErr: "mutually exclusive"},
+		{name: "current and image conflict", args: []string{"install", "--use-current-background", "--background-image", "room.png"}, wantErr: "mutually exclusive"},
 		{name: "bad background color", args: []string{"install", "--background-color", "orange"}, wantErr: "background_color"},
 		{name: "bad background mode", args: []string{"install", "--background-mode", "automatic"}, wantErr: "background_mode"},
 		{name: "bad preset", args: []string{"install", "--preset", "typo"}, wantErr: "unknown preset"},
@@ -85,6 +88,13 @@ func TestCLIProcessMode(t *testing.T) {
 	interactive := applyProcessMode(commandOptions{Name: "uninstall", Interactive: true}, true)
 	if interactive.Headless {
 		t.Fatal("explicit interactive maintenance must remain interactive")
+	}
+}
+
+func TestElevationForwardsCurrentBackgroundChoice(t *testing.T) {
+	arguments := elevatedInstallArguments(commandOptions{Name: "install", UseCurrentBackground: true})
+	if !slices.Contains(arguments, "--use-current-background") {
+		t.Fatalf("elevation arguments = %q", arguments)
 	}
 }
 

@@ -29,6 +29,10 @@ The v4 installer treats the previous product identity as an upgrade source, not 
 
 The old identifiers remain only as explicit compatibility constants and ownership checks; no user-facing screen, active service, executable, directory, or registry entry uses them after a successful upgrade.
 
+## First-install background snapshot
+
+A truly fresh install defaults to the login background Windows already uses. Before W:ID writes policy or starts its service, setup searches the machine Group Policy image, a successfully materialized Personalization CSP image, the current user's Windows lock-screen URI, and finally `C:\Windows\Web\Screen\img100.jpg`. It accepts only a readable local JPEG or PNG, ignores HTTP-only sources, and rejects paths owned by W:ID or its migration predecessors. The selected image is copied once to `background.jpg` or `background.png` beside `config.yml`; it is never treated as a live Windows source, which prevents generated W:ID output from becoming the base of the next render. If no candidate is readable, the normal Azure Dark gradient is used. Repairs and upgrades preserve the existing W:ID backdrop unless an operator explicitly selects a replacement.
+
 ## Refresh sequence
 
 1. Load or create `C:\ProgramData\Wallpaper Identity\config.yml`, resolving the selected named preset or custom field visibility. An explicit `base_image` wins; otherwise discover replaceable `background.jpg` or `background.png` beside the configuration.
@@ -69,6 +73,7 @@ Primary references:
 - [Configure desktop and lock-screen backgrounds](https://learn.microsoft.com/windows/configuration/background/)
 - [ADMX Control Panel Display policy mapping](https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-controlpaneldisplay)
 - [Personalization CSP](https://learn.microsoft.com/windows/client-management/mdm/personalization-csp)
+- [LockScreen.OriginalImageFile](https://learn.microsoft.com/uwp/api/windows.system.userprofile.lockscreen.originalimagefile)
 - [Shared PC technical reference](https://learn.microsoft.com/windows/configuration/shared-pc/shared-pc-technical)
 - [WTSDisconnectSession function](https://learn.microsoft.com/windows/win32/api/wtsapi32/nf-wtsapi32-wtsdisconnectsession)
 - [WTS session information classes](https://learn.microsoft.com/windows/win32/api/wtsapi32/ne-wtsapi32-wts_info_class)

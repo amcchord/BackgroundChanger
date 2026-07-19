@@ -35,20 +35,21 @@ const (
 )
 
 type commandOptions struct {
-	Name            string
-	Preset          string
-	ConfigFile      string
-	BackgroundImage string
-	BackgroundColor string
-	BackgroundMode  string
-	Output          string
-	Headless        bool
-	Quiet           bool
-	JSON            bool
-	ResultFile      string
-	RemoveData      bool
-	UseColors       bool
-	Interactive     bool
+	Name                 string
+	Preset               string
+	ConfigFile           string
+	BackgroundImage      string
+	BackgroundColor      string
+	BackgroundMode       string
+	Output               string
+	Headless             bool
+	Quiet                bool
+	JSON                 bool
+	ResultFile           string
+	RemoveData           bool
+	UseColors            bool
+	UseCurrentBackground bool
+	Interactive          bool
 }
 
 type commandResult struct {
@@ -217,6 +218,7 @@ func execute(options commandOptions) (commandResult, error) {
 				Preset: options.Preset, ConfigFile: options.ConfigFile,
 				BackgroundImage: options.BackgroundImage, BackgroundColor: options.BackgroundColor,
 				BackgroundMode: options.BackgroundMode, UseColors: options.UseColors,
+				UseCurrentBackground: options.UseCurrentBackground,
 			})
 			return err
 		}
@@ -408,17 +410,24 @@ func parseCommand(args []string) (commandOptions, error) {
 		flags.StringVar(&options.BackgroundColor, "background-color", "", "blue, teal, green, purple, slate, or copper")
 		flags.StringVar(&options.BackgroundMode, "background-mode", "", "dark or light")
 		flags.BoolVar(&options.UseColors, "use-colors", false, "remove the standard image and use the configured color")
+		flags.BoolVar(&options.UseCurrentBackground, "use-current-background", false, "snapshot the current Windows login background before first install")
 		if err := flags.Parse(arguments); err != nil {
 			return options, err
 		}
 		if flags.NArg() != 0 {
 			return options, fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
 		}
-		if options.ConfigFile != "" && (options.Preset != "" || options.BackgroundImage != "" || options.BackgroundColor != "" || options.BackgroundMode != "" || options.UseColors) {
+		if options.ConfigFile != "" && (options.Preset != "" || options.BackgroundImage != "" || options.BackgroundColor != "" || options.BackgroundMode != "" || options.UseColors || options.UseCurrentBackground) {
 			return options, errors.New("--config cannot be combined with --preset or background options")
 		}
-		if options.BackgroundImage != "" && options.UseColors {
-			return options, errors.New("--background-image and --use-colors are mutually exclusive")
+		backgroundSources := 0
+		for _, selected := range []bool{options.BackgroundImage != "", options.UseColors, options.UseCurrentBackground} {
+			if selected {
+				backgroundSources++
+			}
+		}
+		if backgroundSources > 1 {
+			return options, errors.New("--background-image, --use-colors, and --use-current-background are mutually exclusive")
 		}
 		if options.Preset != "" {
 			if _, err := config.ForPreset(options.Preset); err != nil {
@@ -592,7 +601,7 @@ func normalizeWindowsArguments(arguments []string) []string {
 	for index, argument := range arguments {
 		lower := strings.ToLower(argument)
 		switch lower {
-		case "/headless", "/no-ui", "/quiet", "/silent", "/json", "/remove-data", "/preset", "/config", "/background-image", "/background-color", "/background-mode", "/use-colors", "/output", "/result-file", "/interactive":
+		case "/headless", "/no-ui", "/quiet", "/silent", "/json", "/remove-data", "/preset", "/config", "/background-image", "/background-color", "/background-mode", "/use-colors", "/use-current-background", "/output", "/result-file", "/interactive":
 			normalized[index] = "--" + strings.TrimPrefix(lower, "/")
 		default:
 			normalized[index] = argument
@@ -627,6 +636,9 @@ func elevatedInstallArguments(options commandOptions) []string {
 	}
 	if options.UseColors {
 		arguments = append(arguments, "--use-colors")
+	}
+	if options.UseCurrentBackground {
+		arguments = append(arguments, "--use-current-background")
 	}
 	if options.Interactive {
 		arguments = append(arguments, "--interactive")
@@ -784,6 +796,7 @@ Install/repair options:
   --background-color NAME blue, teal, green, purple, slate, or copper
   --background-mode MODE  dark or light overlay treatment
   --use-colors            Remove the standard image and use the configured color backdrop
+  --use-current-background Snapshot the current Windows login image (first install only; default)
 
 Uninstall options:
   --headless              Do not show windows or request UAC; requires Administrator/SYSTEM
@@ -805,6 +818,7 @@ Stable exit codes:
 
 RMM examples:
   WallpaperIdentityCLI.exe install --headless --preset balanced
+  WallpaperIdentityCLI.exe install --quiet --use-current-background
   WallpaperIdentityCLI.exe install --quiet --background-color teal --background-mode dark --use-colors
   WallpaperIdentityCLI.exe install --quiet --background-image C:\RMM\server-room.jpg --background-mode light
   WallpaperIdentityCLI.exe install --json --config C:\RMM\wid-config.yml

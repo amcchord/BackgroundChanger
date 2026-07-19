@@ -80,7 +80,7 @@ When `base_image` is empty, W:ID checks these stable paths on every render, in o
 1. `C:\ProgramData\Wallpaper Identity\background.jpg`
 2. `C:\ProgramData\Wallpaper Identity\background.png`
 
-The graphical installer copies a browsed or dropped file to the matching standard path and removes the other extension. Replace that file later and the service will use the new content on its next scheduled, boot, session, or manual refresh; setup does not need to run again. Selecting a color in setup removes the standard image. A non-empty `base_image` remains authoritative for RMM-managed files elsewhere on disk.
+On a truly fresh install, setup snapshots the current Windows login background to the matching standard path. The graphical installer also copies a browsed or dropped replacement there and removes the other extension. Replace that file later and the service will use the new content on its next scheduled, boot, session, or manual refresh; setup does not need to run again. Selecting a color in setup removes the standard image. A non-empty `base_image` remains authoritative for RMM-managed files elsewhere on disk.
 
 The boot login-screen rotation can briefly show a black or clock-only frame while Windows recreates the empty console. W:ID records its once-per-boot fence in `pre-login-refresh.json`; restarting or repairing the service cannot repeat the transition in the same boot. The service never terminates `LogonUI.exe` and never rotates an authenticated session.
 

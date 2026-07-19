@@ -21,7 +21,7 @@ jobs:
         run: go test ./...
       - name: Build installer
         shell: pwsh
-        run: ./build.ps1 -Version v4.7.0 -Commit $env:GITHUB_SHA
+        run: ./build.ps1 -Version v4.7.5 -Commit $env:GITHUB_SHA
       - name: Smoke-test headless CLI
         shell: pwsh
         run: |

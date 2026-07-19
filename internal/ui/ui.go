@@ -13,6 +13,7 @@ import (
 	"github.com/amcchord/WallpaperIdentity/v4/internal/branding"
 	"github.com/amcchord/WallpaperIdentity/v4/internal/buildinfo"
 	"github.com/amcchord/WallpaperIdentity/v4/internal/config"
+	"github.com/amcchord/WallpaperIdentity/v4/internal/loginscreen"
 	"github.com/amcchord/WallpaperIdentity/v4/internal/overlay"
 	"github.com/amcchord/WallpaperIdentity/v4/internal/paths"
 	"github.com/amcchord/WallpaperIdentity/v4/internal/setup"
@@ -27,8 +28,8 @@ const (
 	defaultPresetIndex      = 1
 	presetPreviewWidth      = 238
 	presetPreviewHeight     = 134
-	appearancePreviewWidth  = 430
-	appearancePreviewHeight = 242
+	appearancePreviewWidth  = 400
+	appearancePreviewHeight = 225
 	colorSwatchWidth        = 92
 	colorSwatchHeight       = 22
 )
@@ -73,6 +74,7 @@ func Main() error {
 	legacyInstalled := setup.IsLegacyInstalled()
 	appearance := config.Default()
 	selectedPreset := defaultPresetIndex
+	hasSavedConfiguration := fileExists(paths.ConfigFile()) || fileExists(paths.LegacyConfigFile())
 	if current, loadErr := config.Load(paths.ConfigFile()); loadErr == nil {
 		appearance = current
 		appearance.BaseImage = paths.ResolveBackgroundImage(current.BaseImage)
@@ -84,7 +86,20 @@ func Main() error {
 	} else if installed {
 		selectedPreset = -1
 	}
-	selectedBackgroundImage := appearance.BaseImage
+	freshInstall := !installed && !legacyInstalled && !hasSavedConfiguration
+	currentWindowsBackground := loginscreen.CurrentBackgroundImage{}
+	currentWindowsBackgroundFound := false
+	if freshInstall {
+		currentWindowsBackground, currentWindowsBackgroundFound = loginscreen.FindCurrentBackgroundImage()
+		if currentWindowsBackgroundFound {
+			appearance.BaseImage = currentWindowsBackground.Path
+		} else {
+			appearance.BaseImage = ""
+		}
+	}
+	initialAppearance := appearance
+	defaultBackgroundSelected := true
+	selectedBackgroundImage := ""
 	pendingBackgroundImage := ""
 	backgroundChanged := false
 	useColors := false
@@ -121,7 +136,7 @@ func Main() error {
 	var layoutPage, backgroundPage *walk.Composite
 	var stateLabel, detailLabel, selectionLabel, backgroundSelectionLabel *walk.Label
 	var appearanceImageView *walk.ImageView
-	var imageWell, advanceButton, backButton, uninstallButton, closeButton *walk.PushButton
+	var defaultBackgroundButton, imageWell, advanceButton, backButton, uninstallButton, closeButton *walk.PushButton
 	presetButtons := make([]*walk.PushButton, len(choices))
 	colorButtons := make([]*walk.PushButton, len(backgroundChoices))
 	modeButtons := make([]*walk.PushButton, 2)
@@ -192,19 +207,37 @@ func Main() error {
 		return nil
 	}
 	updateBackgroundControls := func() {
-		custom := selectedBackgroundImage != ""
-		updateBackgroundButtons(colorButtons, backgroundChoices, appearance.BackgroundColor, custom)
+		replacementSelected := !defaultBackgroundSelected
+		updateBackgroundButtons(colorButtons, backgroundChoices, appearance.BackgroundColor, !replacementSelected || selectedBackgroundImage != "")
 		updateModeButtons(modeButtons, appearance.BackgroundMode)
+		if defaultBackgroundButton != nil {
+			_ = defaultBackgroundButton.SetText(defaultBackgroundButtonText(defaultBackgroundSelected, freshInstall))
+		}
 		if imageWell != nil {
 			_ = imageWell.SetText(backgroundImageWellText(selectedBackgroundImage))
 		}
 		if backgroundSelectionLabel != nil {
-			backgroundSelectionLabel.SetText(backgroundSelectionText(appearance, selectedBackgroundImage, installed, backgroundChanged))
+			backgroundSelectionLabel.SetText(backgroundSelectionText(appearance, selectedBackgroundImage, installed, backgroundChanged, defaultBackgroundSelected, freshInstall, currentWindowsBackgroundFound))
+		}
+	}
+	selectDefaultBackground := func() {
+		appearance.BackgroundColor = initialAppearance.BackgroundColor
+		appearance.BackgroundMode = initialAppearance.BackgroundMode
+		appearance.BaseImage = initialAppearance.BaseImage
+		defaultBackgroundSelected = true
+		selectedBackgroundImage = ""
+		pendingBackgroundImage = ""
+		useColors = false
+		backgroundChanged = false
+		updateBackgroundControls()
+		if refreshErr := refreshAppearance(true); refreshErr != nil && window != nil {
+			walk.MsgBox(window, "Wallpaper Identity Setup", refreshErr.Error(), walk.MsgBoxIconError)
 		}
 	}
 	selectBackgroundColor := func(name string) {
 		appearance.BackgroundColor = name
 		appearance.BaseImage = ""
+		defaultBackgroundSelected = false
 		selectedBackgroundImage = ""
 		pendingBackgroundImage = ""
 		useColors = true
@@ -238,6 +271,7 @@ func Main() error {
 			return
 		}
 		appearance.BaseImage = absolute
+		defaultBackgroundSelected = false
 		selectedBackgroundImage = absolute
 		pendingBackgroundImage = absolute
 		useColors = false
@@ -280,7 +314,7 @@ func Main() error {
 		Title:         "Wallpaper Identity Setup",
 		Icon:          appIcon,
 		FixedSize:     true,
-		Size:          Size{Width: 900, Height: 650},
+		Size:          Size{Width: 900, Height: 700},
 		Layout:        VBox{Margins: Margins{Left: 24, Top: 20, Right: 24, Bottom: 18}, Spacing: 10},
 		DefaultButton: &advanceButton,
 		CancelButton:  &closeButton,
@@ -323,21 +357,22 @@ func Main() error {
 				Children: []Widget{
 					GroupBox{
 						Title:  "2 of 2 — Choose the background",
-						Layout: VBox{Margins: Margins{Left: 14, Top: 12, Right: 14, Bottom: 12}, Spacing: 10},
+						Layout: VBox{Margins: Margins{Left: 14, Top: 10, Right: 14, Bottom: 10}, Spacing: 8},
 						Children: []Widget{
-							Label{Text: "Use one of twelve restrained server-ready color variants, or supply your own image.", Font: Font{Family: "Segoe UI", PointSize: 9}},
+							Label{Text: "W:ID starts with the background Windows already uses. Choose a replacement only when you want one.", Font: Font{Family: "Segoe UI", PointSize: 9}},
 							Composite{Layout: HBox{Spacing: 18}, Children: []Widget{
 								ImageView{AssignTo: &appearanceImageView, Image: appearancePreview, Mode: ImageViewModeShrink, MinSize: Size{Width: appearancePreviewWidth, Height: appearancePreviewHeight}, MaxSize: Size{Width: appearancePreviewWidth, Height: appearancePreviewHeight}},
-								Composite{Layout: VBox{Spacing: 8}, MinSize: Size{Width: 325}, Children: []Widget{
-									Label{Text: "Base color", Font: Font{Family: "Segoe UI Semibold", PointSize: 9}},
-									Composite{Layout: Grid{Columns: 3, Spacing: 6}, Children: backgroundColorWidgets(backgroundChoices, colorButtons, swatches, appearance.BackgroundColor, selectedBackgroundImage != "", selectBackgroundColor)},
+								Composite{Layout: VBox{Spacing: 6}, MinSize: Size{Width: 325}, Children: []Widget{
+									PushButton{AssignTo: &defaultBackgroundButton, Text: defaultBackgroundButtonText(defaultBackgroundSelected, freshInstall), MinSize: Size{Width: 320, Height: 36}, ToolTipText: defaultBackgroundTooltip(freshInstall, currentWindowsBackground, currentWindowsBackgroundFound), OnClicked: selectDefaultBackground},
+									Label{Text: "Replacement color", Font: Font{Family: "Segoe UI Semibold", PointSize: 9}},
+									Composite{Layout: Grid{Columns: 3, Spacing: 6}, Children: backgroundColorWidgets(backgroundChoices, colorButtons, swatches, appearance.BackgroundColor, defaultBackgroundSelected || selectedBackgroundImage != "", selectBackgroundColor)},
 									Composite{Layout: HBox{Spacing: 6}, Children: []Widget{
 										Label{Text: "Appearance:", Font: Font{Family: "Segoe UI Semibold", PointSize: 9}},
 										PushButton{AssignTo: &modeButtons[0], Text: backgroundModeButtonText(config.BackgroundDark, appearance.BackgroundMode), MinSize: Size{Width: 86}, OnClicked: func() { selectBackgroundMode(config.BackgroundDark) }},
 										PushButton{AssignTo: &modeButtons[1], Text: backgroundModeButtonText(config.BackgroundLight, appearance.BackgroundMode), MinSize: Size{Width: 86}, OnClicked: func() { selectBackgroundMode(config.BackgroundLight) }},
 									}},
-									PushButton{AssignTo: &imageWell, Text: backgroundImageWellText(selectedBackgroundImage), MinSize: Size{Width: 320, Height: 52}, ToolTipText: "Drop one JPEG or PNG here, or click to open the file browser.", OnClicked: browseBackground},
-									Label{AssignTo: &backgroundSelectionLabel, Text: backgroundSelectionText(appearance, selectedBackgroundImage, installed, backgroundChanged), Font: Font{Family: "Segoe UI Semibold", PointSize: 8}},
+									PushButton{AssignTo: &imageWell, Text: backgroundImageWellText(selectedBackgroundImage), MinSize: Size{Width: 320, Height: 42}, ToolTipText: "Drop one JPEG or PNG here, or click to open the file browser.", OnClicked: browseBackground},
+									Label{AssignTo: &backgroundSelectionLabel, Text: backgroundSelectionText(appearance, selectedBackgroundImage, installed, backgroundChanged, defaultBackgroundSelected, freshInstall, currentWindowsBackgroundFound), Font: Font{Family: "Segoe UI Semibold", PointSize: 8}},
 								}},
 							}},
 							Label{Text: "Future changes: replace background.jpg or background.png in " + paths.DataDir() + ".", Font: Font{Family: "Segoe UI", PointSize: 8}},
@@ -396,18 +431,22 @@ func Main() error {
 		if preset != "" {
 			args = append(args, "--preset", preset)
 		}
-		applyBackground := !uninstall && backgroundChanged
+		applyBackground := !uninstall && (backgroundChanged || freshInstall)
 		if applyBackground {
 			installOptions.BackgroundColor = appearance.BackgroundColor
 			installOptions.BackgroundMode = appearance.BackgroundMode
 			installOptions.BackgroundImage = pendingBackgroundImage
 			installOptions.UseColors = useColors
+			installOptions.UseCurrentBackground = defaultBackgroundSelected && freshInstall
 			args = append(args, "--background-color", appearance.BackgroundColor, "--background-mode", appearance.BackgroundMode)
 			if pendingBackgroundImage != "" {
 				args = append(args, "--background-image", pendingBackgroundImage)
 			}
 			if useColors {
 				args = append(args, "--use-colors")
+			}
+			if installOptions.UseCurrentBackground {
+				args = append(args, "--use-current-background")
 			}
 		}
 		if uninstall {
@@ -426,7 +465,7 @@ func Main() error {
 		uninstallButton.SetEnabled(false)
 		closeButton.SetEnabled(false)
 		setPresetButtonsEnabled(presetButtons, false)
-		setBackgroundButtonsEnabled(colorButtons, modeButtons, imageWell, false)
+		setBackgroundButtonsEnabled(colorButtons, modeButtons, defaultBackgroundButton, imageWell, false)
 		working = true
 		stateLabel.SetText("Working…")
 		detailLabel.SetText("Preparing the requested change.")
@@ -450,7 +489,7 @@ func Main() error {
 				uninstallButton.SetEnabled(installedNow && !setup.IsLegacyInstalled())
 				closeButton.SetEnabled(true)
 				setPresetButtonsEnabled(presetButtons, true)
-				setBackgroundButtonsEnabled(colorButtons, modeButtons, imageWell, true)
+				setBackgroundButtonsEnabled(colorButtons, modeButtons, defaultBackgroundButton, imageWell, true)
 				if opErr != nil {
 					presetChanged = applyPreset && installedNow
 					stateLabel.SetText("The operation could not be completed")
@@ -461,12 +500,15 @@ func Main() error {
 					presetChanged = false
 					backgroundChanged = false
 					useColors = false
+					freshInstall = false
+					defaultBackgroundSelected = true
 					pendingBackgroundImage = ""
+					selectedBackgroundImage = ""
 					if current, loadErr := config.Load(paths.ConfigFile()); loadErr == nil {
 						appearance.BackgroundColor = current.BackgroundColor
 						appearance.BackgroundMode = current.BackgroundMode
-						selectedBackgroundImage = paths.ResolveBackgroundImage(current.BaseImage)
-						appearance.BaseImage = selectedBackgroundImage
+						appearance.BaseImage = paths.ResolveBackgroundImage(current.BaseImage)
+						initialAppearance = appearance
 					}
 					newState, newDetail := installationSummary(installedNow, setup.IsLegacyInstalled())
 					stateLabel.SetText(newState)
@@ -526,7 +568,7 @@ func backgroundColorWidgets(choices []backgroundChoice, buttons []*walk.PushButt
 		choice := choice
 		widgets = append(widgets, PushButton{
 			AssignTo: &buttons[index], Text: backgroundButtonText(choice, !customImage && choice.Name == selected),
-			Image: swatches[choice.Name], ImageAboveText: true, MinSize: Size{Width: 100, Height: 52},
+			Image: swatches[choice.Name], ImageAboveText: true, MinSize: Size{Width: 100, Height: 46},
 			ToolTipText: "Use the " + choice.Title + " color family", OnClicked: func() { selectColor(choice.Name) },
 		})
 	}
@@ -633,7 +675,28 @@ func backgroundTitle(name string) string {
 	return "Azure"
 }
 
-func backgroundSelectionText(appearance config.Config, imagePath string, installed, changed bool) string {
+func defaultBackgroundButtonText(selected, freshInstall bool) string {
+	label := "Keep current W:ID background"
+	if freshInstall {
+		label = "Use current Windows login background"
+	}
+	if selected {
+		return "✓  " + label
+	}
+	return label
+}
+
+func defaultBackgroundTooltip(freshInstall bool, current loginscreen.CurrentBackgroundImage, found bool) string {
+	if !freshInstall {
+		return "Keep the backdrop already configured for Wallpaper Identity."
+	}
+	if !found {
+		return "Windows did not expose a readable image. W:ID will use Azure Dark as a safe fallback."
+	}
+	return fmt.Sprintf("Snapshot the current image from %s.\n%s", current.Source, current.Path)
+}
+
+func backgroundSelectionText(appearance config.Config, imagePath string, installed, changed, defaultSelected, freshInstall, currentFound bool) string {
 	prefix := "Selected"
 	if installed && changed {
 		prefix = "Selected for update"
@@ -641,6 +704,15 @@ func backgroundSelectionText(appearance config.Config, imagePath string, install
 		prefix = "Current background"
 	}
 	mode := strings.ToUpper(appearance.BackgroundMode[:1]) + appearance.BackgroundMode[1:]
+	if defaultSelected {
+		if freshInstall {
+			if currentFound {
+				return fmt.Sprintf("%s: Current Windows login background · %s appearance", prefix, mode)
+			}
+			return fmt.Sprintf("%s: Current Windows background when available · Azure fallback · %s", prefix, mode)
+		}
+		return fmt.Sprintf("%s: Keep current W:ID backdrop · %s appearance", prefix, mode)
+	}
 	if imagePath != "" {
 		return fmt.Sprintf("%s: Custom image · %s appearance", prefix, mode)
 	}
@@ -676,7 +748,7 @@ func updateModeButtons(buttons []*walk.PushButton, selected string) {
 	}
 }
 
-func setBackgroundButtonsEnabled(colors, modes []*walk.PushButton, imageWell *walk.PushButton, enabled bool) {
+func setBackgroundButtonsEnabled(colors, modes []*walk.PushButton, defaultButton, imageWell *walk.PushButton, enabled bool) {
 	for _, button := range append(colors, modes...) {
 		if button != nil {
 			button.SetEnabled(enabled)
@@ -684,6 +756,9 @@ func setBackgroundButtonsEnabled(colors, modes []*walk.PushButton, imageWell *wa
 	}
 	if imageWell != nil {
 		imageWell.SetEnabled(enabled)
+	}
+	if defaultButton != nil {
+		defaultButton.SetEnabled(enabled)
 	}
 }
 
@@ -811,6 +886,11 @@ func primaryScreenDPI() int {
 	return dpi
 }
 
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 func presetPreviewPixelSize(dpi int) (int, int) {
 	if dpi < 96 {
 		dpi = 96
@@ -903,7 +983,7 @@ func operationCompletionText(result error) (string, string) {
 
 func installationSummary(installed, legacyInstalled bool) (string, string) {
 	if !installed {
-		return "Not installed", "Choose what to show and a background, then select Install."
+		return "Not installed", "Choose what to show, then review the current Windows login background."
 	}
 	if legacyInstalled {
 		return "Previous version detected", "Repair / Upgrade will migrate its service, configuration, generated images, and policy backups to Wallpaper Identity."

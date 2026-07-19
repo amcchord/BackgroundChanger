@@ -97,6 +97,35 @@ func TestStandardBackgroundBackupRestoresPreviousFiles(t *testing.T) {
 	}
 }
 
+func TestCurrentWindowsBackgroundIsOnlyTheTrueFreshInstallDefault(t *testing.T) {
+	tests := []struct {
+		name      string
+		options   InstallOptions
+		installed bool
+		saved     bool
+		want      bool
+	}{
+		{name: "fresh install", want: true},
+		{name: "fresh preset", options: InstallOptions{Preset: "balanced"}, want: true},
+		{name: "saved configuration", saved: true},
+		{name: "installed", installed: true},
+		{name: "explicit image", options: InstallOptions{BackgroundImage: `C:\RMM\room.jpg`}},
+		{name: "explicit colors", options: InstallOptions{UseColors: true}},
+		{name: "complete config", options: InstallOptions{ConfigFile: `C:\RMM\config.yml`}},
+		{name: "explicit current with saved config", options: InstallOptions{UseCurrentBackground: true}, saved: true, want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := shouldUseCurrentBackground(test.options, test.installed, test.saved); got != test.want {
+				t.Fatalf("shouldUseCurrentBackground = %v, want %v", got, test.want)
+			}
+		})
+	}
+	if err := validateBackgroundSourceOptions(InstallOptions{UseCurrentBackground: true, UseColors: true}); err == nil {
+		t.Fatal("expected mutually exclusive background sources to fail")
+	}
+}
+
 func writeTestImage(t *testing.T, path, format string) {
 	t.Helper()
 	file, err := os.Create(path)

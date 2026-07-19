@@ -12,6 +12,8 @@ enable_pro_compatibility: true
 refresh_login_screen_on_boot: true
 # Leave base_image empty to discover background.jpg or background.png beside
 # the installed config.yml. An absolute path remains useful for RMM-managed art.
+# The graphical installer snapshots the existing Windows login background into
+# this standard location on a truly fresh install; config.yml stores no live link.
 base_image: ""
 # Six color families × Dark/Light provide twelve built-in backdrops.
 background_color: blue

@@ -30,12 +30,13 @@ type ProgressFunc func(percent int, message string)
 var ErrSetupRunning = errors.New("another Wallpaper Identity setup operation is already running")
 
 type InstallOptions struct {
-	Preset          string
-	ConfigFile      string
-	BackgroundImage string
-	BackgroundColor string
-	BackgroundMode  string
-	UseColors       bool
+	Preset               string
+	ConfigFile           string
+	BackgroundImage      string
+	BackgroundColor      string
+	BackgroundMode       string
+	UseColors            bool
+	UseCurrentBackground bool
 }
 
 // OperationResult reports setup work that an unattended caller may need to
@@ -71,11 +72,15 @@ func InstallWithOptionsResult(progress ProgressFunc, options InstallOptions) (Op
 	if !IsAdministrator() {
 		return result, errors.New("administrator privileges are required")
 	}
-	if options.ConfigFile != "" && (options.Preset != "" || options.BackgroundImage != "" || options.BackgroundColor != "" || options.BackgroundMode != "" || options.UseColors) {
+	if options.ConfigFile != "" && (options.Preset != "" || options.BackgroundImage != "" || options.BackgroundColor != "" || options.BackgroundMode != "" || options.UseColors || options.UseCurrentBackground) {
 		return result, errors.New("config file cannot be combined with preset or background options")
 	}
-	if options.BackgroundImage != "" && options.UseColors {
-		return result, errors.New("background image and use-colors are mutually exclusive")
+	if err := validateBackgroundSourceOptions(options); err != nil {
+		return result, err
+	}
+	installedBeforeSetup := IsInstalled()
+	if options.UseCurrentBackground && installedBeforeSetup {
+		return result, errors.New("use-current-background is available only before W:ID is installed; repair preserves the existing W:ID backdrop")
 	}
 	var suppliedConfig *config.Config
 	if options.ConfigFile != "" {
@@ -112,6 +117,15 @@ func InstallWithOptionsResult(progress ProgressFunc, options InstallOptions) (Op
 		return result, err
 	}
 	defer release()
+	hadSavedConfiguration := fileExists(paths.ConfigFile()) || fileExists(paths.LegacyConfigFile())
+	useCurrentBackground := shouldUseCurrentBackground(options, installedBeforeSetup, hadSavedConfiguration)
+	backgroundImage := options.BackgroundImage
+	if useCurrentBackground {
+		progress(3, "Capturing the current Windows login background...")
+		if current, found := loginscreen.FindCurrentBackgroundImage(); found {
+			backgroundImage = current.Path
+		}
+	}
 	progress(5, "Preparing Wallpaper Identity…")
 	if err := removeService(paths.LegacyServiceName); err != nil {
 		return result, fmt.Errorf("stop the previous-version service: %w", err)
@@ -154,20 +168,20 @@ func InstallWithOptionsResult(progress ProgressFunc, options InstallOptions) (Op
 		activeConfig.BackgroundMode = options.BackgroundMode
 	}
 	var backgroundBackup *standardBackgroundBackup
-	if options.UseColors || options.BackgroundImage != "" {
+	if options.UseColors || useCurrentBackground || backgroundImage != "" {
 		backgroundBackup, err = backupStandardBackgrounds()
 		if err != nil {
 			return result, fmt.Errorf("back up the current custom background: %w", err)
 		}
 	}
-	if options.UseColors {
+	if options.UseColors || (useCurrentBackground && backgroundImage == "") {
 		activeConfig.BaseImage = ""
 		if err := removeStandardBackgrounds(); err != nil {
 			return result, rollbackBackgroundChange(backgroundBackup, fmt.Errorf("remove the custom background: %w", err))
 		}
 	}
-	if options.BackgroundImage != "" {
-		if _, err := installStandardBackground(options.BackgroundImage); err != nil {
+	if backgroundImage != "" {
+		if _, err := installStandardBackground(backgroundImage); err != nil {
 			return result, rollbackBackgroundChange(backgroundBackup, fmt.Errorf("install background image: %w", err))
 		}
 		activeConfig.BaseImage = ""
@@ -878,6 +892,26 @@ func removeFileIfExists(path string) error {
 		return nil
 	}
 	return err
+}
+
+func validateBackgroundSourceOptions(options InstallOptions) error {
+	selected := 0
+	for _, active := range []bool{options.BackgroundImage != "", options.UseColors, options.UseCurrentBackground} {
+		if active {
+			selected++
+		}
+	}
+	if selected > 1 {
+		return errors.New("background image, use-colors, and use-current-background are mutually exclusive")
+	}
+	return nil
+}
+
+func shouldUseCurrentBackground(options InstallOptions, installed, savedConfiguration bool) bool {
+	if options.UseCurrentBackground {
+		return true
+	}
+	return !installed && !savedConfiguration && options.ConfigFile == "" && options.BackgroundImage == "" && !options.UseColors
 }
 
 func installStandardBackground(source string) (string, error) {

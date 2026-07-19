@@ -101,12 +101,12 @@ func TestPresetPreviewPixelsFollowDisplayDPI(t *testing.T) {
 
 func TestBackgroundSelectionCopyAndImageWell(t *testing.T) {
 	appearance := config.Default()
-	if got := backgroundSelectionText(appearance, "", false, false); got != "Selected: Azure · Dark" {
+	if got := backgroundSelectionText(appearance, "", false, false, false, false, false); got != "Selected: Azure · Dark" {
 		t.Fatalf("new color selection = %q", got)
 	}
 	appearance.BackgroundColor = config.BackgroundTeal
 	appearance.BackgroundMode = config.BackgroundLight
-	if got := backgroundSelectionText(appearance, `C:\Images\room.png`, true, true); got != "Selected for update: Custom image · Light appearance" {
+	if got := backgroundSelectionText(appearance, `C:\Images\room.png`, true, true, false, false, false); got != "Selected for update: Custom image · Light appearance" {
 		t.Fatalf("custom selection = %q", got)
 	}
 	if got := backgroundImageWellText(""); !strings.Contains(got, "Drop a JPEG / PNG") {
@@ -115,6 +115,22 @@ func TestBackgroundSelectionCopyAndImageWell(t *testing.T) {
 	path := filepath.Join(`C:\Images`, strings.Repeat("very-long-", 5)+"room.png")
 	if got := backgroundImageWellText(path); !strings.HasPrefix(got, "✓  Custom image: ") || len([]rune(got)) > 50 {
 		t.Fatalf("selected image well = %q", got)
+	}
+}
+
+func TestCurrentWindowsBackgroundIsTheFreshInstallDefault(t *testing.T) {
+	appearance := config.Default()
+	if got := defaultBackgroundButtonText(true, true); !strings.Contains(strings.ToLower(got), "current windows login background") || !strings.HasPrefix(got, "✓") {
+		t.Fatalf("fresh default button = %q", got)
+	}
+	if got := backgroundSelectionText(appearance, "", false, false, true, true, true); got != "Selected: Current Windows login background · Dark appearance" {
+		t.Fatalf("fresh current selection = %q", got)
+	}
+	if got := backgroundSelectionText(appearance, "", false, false, true, true, false); !strings.Contains(got, "Azure fallback") {
+		t.Fatalf("unavailable current fallback = %q", got)
+	}
+	if got := defaultBackgroundButtonText(true, false); !strings.Contains(got, "Keep current W:ID background") {
+		t.Fatalf("maintenance default button = %q", got)
 	}
 }
 

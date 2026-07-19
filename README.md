@@ -26,16 +26,16 @@ The renderer measures and fits every machine-supplied value, uses the detected d
 ## Install
 
 1. Download `WallpaperIdentitySetup.exe` from the [latest release](https://github.com/amcchord/WallpaperIdentity/releases/latest).
-2. Open it, choose what to show, select a background, and select **Install**.
+2. Open it, choose what to show, review the current Windows login background, and select **Install**.
 3. Approve the Windows administrator prompt.
 
-The W:ID installer is self-contained and works offline. Its two short pages keep the advancing action in the standard lower-right position. First, click anywhere on a full-size rendered preview for **Identity**, **Balanced**, or **Operations**. Then choose one of six server-ready colors in Dark or Light mode, or drop/browse to a JPEG or PNG and confirm it in the live preview. Setup installs one automatic LocalSystem service and immediately generates the first background. Its blocking progress window finishes at 100% with an explicit **Done** state.
+The W:ID installer is self-contained and works offline. Its two short pages keep the advancing action in the standard lower-right position. First, click anywhere on a full-size rendered preview for **Identity**, **Balanced**, or **Operations**. On a fresh install, the second page starts with a live preview of the login background Windows already uses. W:ID snapshots that image once so later refreshes never layer overlays recursively. The six server-ready Dark/Light color families and JPEG/PNG drop/browser remain explicit replacement choices. If Windows exposes no readable image, Azure Dark is the safe fallback. Setup installs one automatic LocalSystem service and immediately generates the first background. Its blocking progress window finishes at 100% with an explicit **Done** state.
 
 For unattended deployment, the companion `WallpaperIdentityCLI.exe` provides strict, blocking `install`, `repair`, `upgrade`, `status`, `refresh`, `render`, and `uninstall` commands with JSON/result-file output and stable exit codes. See the [headless and RMM guide](docs/CLI.md).
 
 ![Wallpaper Identity clean-install layout page with three full-size clickable previews and Next in the lower right](assets/screenshots/installer-layout.jpg)
 
-![Wallpaper Identity background page with six color families, Dark and Light modes, custom-image drop target, and live preview](assets/screenshots/installer-backgrounds.jpg)
+![Wallpaper Identity background page with the current Windows login background selected by default and replacement choices below](assets/screenshots/installer-current-background.jpg)
 
 ![Wallpaper Identity progress window at its final Done state](assets/screenshots/installer-done.png)
 
@@ -116,7 +116,7 @@ Requirements: Windows and Go 1.24 or newer.
 
 ```powershell
 go test ./...
-powershell -ExecutionPolicy Bypass -File .\build.ps1 -Version v4.7.0
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -Version v4.7.5
 ```
 
 Release output is written to `dist\WallpaperIdentitySetup.exe`, `dist\WallpaperIdentityCLI.exe`, and `dist\SHA256SUMS.txt`. Both offline binaries contain the service, renderer, fonts, W:ID icon, and Windows manifest; Setup uses the graphical Windows subsystem while CLI uses the console subsystem for reliable RMM waiting, stdout, and exit codes.

@@ -8,10 +8,18 @@ go test ./...
 go test -race ./internal/...
 go vet ./...
 git diff --check
-powershell -ExecutionPolicy Bypass -File .\build.ps1 -Version v4.7.0
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -Version v4.7.5
 ```
 
-Tests cover YAML validation, migration, and round-tripping; all twelve background variants; standard-image discovery and JPEG/PNG replacement; measured truncation; aspect-aware fallbacks; bounded panel and row metrics across 800×600, 1024×768, 1280×1024, 1366×768, 1920×1080, 2560×1080, 3440×1440, and 1080×1920; the guarded boot-refresh default and opt-out; stable Windows boot identity; authenticated-session, console-change, process, API-failure, and once-per-boot paths; v3-to-W:ID data migration; the three presets; installer preset/background-selection and final Done-state copy; the permanent generated timestamp; edition classification; policy ownership; space-free CSP image staging; PowerShell command encoding; service queue/drain behavior; snapshot formatting; and renderer dimensions.
+Tests cover YAML validation, migration, and round-tripping; all twelve background variants; one-time current-Windows-background resolution, file-URL/environment expansion, W:ID-output rejection, standard-image discovery, and PNG/JPEG replacement; measured truncation; aspect-aware fallbacks; bounded panel and row metrics across 800×600, 1024×768, 1280×1024, 1366×768, 1920×1080, 2560×1080, 3440×1440, and 1080×1920; the guarded boot-refresh default and opt-out; stable Windows boot identity; authenticated-session, console-change, process, API-failure, and once-per-boot paths; v3-to-W:ID data migration; the three presets; installer preset/background-selection and final Done-state copy; the permanent generated timestamp; edition classification; policy ownership; space-free CSP image staging; PowerShell command encoding; service queue/drain behavior; snapshot formatting; and renderer dimensions.
+
+## Current Windows background default for v4.7.5
+
+- Verified candidate precedence and rejection of unreadable, remote-only, and W:ID-owned images in automated tests.
+- Verified that a fresh graphical install selects **Use current Windows login background** before any replacement color or custom image.
+- Verified the live preview uses the resolved image and exposes Azure Dark as the no-image fallback.
+- Verified maintenance continues to default to **Keep current W:ID background** and cannot recursively capture generated output.
+- Verified `/use-current-background`, UAC forwarding, source conflicts, and first-install-only setup enforcement.
 
 ## Responsive backgrounds and installer validation for v4.7.0
 
