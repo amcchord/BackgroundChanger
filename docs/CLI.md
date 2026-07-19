@@ -57,7 +57,7 @@ Example result:
   "reboot_required": false,
   "success": true,
   "exit_code": 0,
-  "version": "v4.0.1",
+  "version": "v4.0.2",
   "commit": "abc1234",
   "installed": true,
   "legacy_installed": false,
@@ -85,7 +85,7 @@ version [--json] [--result-file PATH]
 help
 ```
 
-`status` verifies that the service is running, the last render succeeded, Windows confirmed an edition-appropriate policy path, and the timestamp is no older than twice `refresh_minutes` plus one minute. A registry write alone is not treated as success on Pro: status requires verified `SetEduPolicies` plus Personalization CSP status `1` for the exact generated file. This proves the managed file and policy state, not which bitmap an already-running `LogonUI` surface currently displays; Windows can retain its previous cached bitmap. `status` reports the previous service as `legacy_installed` before an upgrade. `refresh` sends a dedicated service control and waits up to 90 seconds for a newer `reason: "cli"` status record produced by LocalSystem. `render` creates a preview only and never changes Windows policy.
+`status` verifies that the service is running, the last render succeeded, Windows confirmed an edition-appropriate policy path, and the timestamp is no older than twice `refresh_minutes` plus one minute. A registry write alone is not treated as success on Pro: status requires verified `SetEduPolicies` plus Personalization CSP status `1` for the exact generated file. During boot, the later `boot-settled` status also records the guarded `pre_login_session_refresh` result; `pre-login-refresh.json` preserves the once-per-boot outcome after interval status records replace it. `status` reports the previous service as `legacy_installed` before an upgrade. `refresh` sends a dedicated service control and waits up to 90 seconds for a newer `reason: "cli"` status record produced by LocalSystem. Manual refresh updates policy but does not rotate the console; the guarded rotation is deliberately limited to the boot-settled path. `render` creates a preview only and never changes Windows policy.
 
 The previous `--install`, `--uninstall`, `--render`, `--refresh`, `--status`, and `--version` command aliases remain valid. Windows-style `/install`, `/uninstall`, `/quiet`, `/silent`, `/headless`, `/no-ui`, `/json`, `/result-file`, `/preset`, `/config`, `/output`, and `/remove-data` forms are also accepted. `/?` prints help.
 

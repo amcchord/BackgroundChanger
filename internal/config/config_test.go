@@ -33,6 +33,9 @@ func TestLoadOrCreateRoundTrip(t *testing.T) {
 	if !got.EnableProCompatibility || !strings.Contains(string(b), "enable_pro_compatibility: true") {
 		t.Fatalf("generated config does not enable documented Windows Pro compatibility:\n%s", b)
 	}
+	if !got.RefreshLoginScreenBoot || !strings.Contains(string(b), "refresh_login_screen_on_boot: true") {
+		t.Fatalf("generated config does not enable the guarded boot login-screen refresh:\n%s", b)
+	}
 	got.Preset = PresetCustom
 	got.RefreshMinutes = 17
 	got.Show.GPU = false
@@ -56,12 +59,22 @@ func TestExistingConfigGetsSafeProCompatibilityDefault(t *testing.T) {
 	if !cfg.EnableProCompatibility {
 		t.Fatal("config without the v4.0.1 field should enable Pro compatibility")
 	}
+	if !cfg.RefreshLoginScreenBoot {
+		t.Fatal("config without the boot-refresh field should enable the guarded default")
+	}
 	cfg, err = decode([]byte("preset: balanced\nrefresh_minutes: 5\nenable_pro_compatibility: false\n"), false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.EnableProCompatibility {
 		t.Fatal("explicit Pro compatibility opt-out was ignored")
+	}
+	cfg, err = decode([]byte("preset: balanced\nrefresh_minutes: 5\nrefresh_login_screen_on_boot: false\n"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RefreshLoginScreenBoot {
+		t.Fatal("explicit login-screen boot refresh opt-out was ignored")
 	}
 }
 
@@ -70,7 +83,7 @@ func TestRepositoryExampleIsValid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Preset != PresetCustom || !cfg.EnableProCompatibility || !cfg.Show.OS || cfg.Show.FailedAutoServices {
+	if cfg.Preset != PresetCustom || !cfg.EnableProCompatibility || !cfg.RefreshLoginScreenBoot || !cfg.Show.OS || cfg.Show.FailedAutoServices {
 		t.Fatalf("unexpected example config: %#v", cfg)
 	}
 }

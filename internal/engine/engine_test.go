@@ -28,3 +28,15 @@ func TestEffectivePolicyRequiresEditionAppropriateProof(t *testing.T) {
 		})
 	}
 }
+
+func TestPreLoginRefreshWaitsForBootSettledNetworkState(t *testing.T) {
+	if shouldRefreshPreLogin("service-start", true) {
+		t.Fatal("service-start can run before DHCP replaces a previous lease")
+	}
+	if !shouldRefreshPreLogin("boot-settled", true) {
+		t.Fatal("boot-settled should refresh the empty login session")
+	}
+	if shouldRefreshPreLogin("boot-settled", false) {
+		t.Fatal("explicit boot login-screen refresh opt-out was ignored")
+	}
+}

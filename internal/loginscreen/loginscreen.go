@@ -40,11 +40,12 @@ type policyBackup struct {
 }
 
 type ApplyResult struct {
-	GroupPolicyApplied      bool     `json:"group_policy_applied"`
-	MDMBridgeApplied        bool     `json:"mdm_bridge_applied"`
-	ProCompatibilityApplied bool     `json:"pro_compatibility_applied"`
-	LockAppRefreshed        bool     `json:"lock_app_refreshed"`
-	Warnings                []string `json:"warnings,omitempty"`
+	GroupPolicyApplied      bool                   `json:"group_policy_applied"`
+	MDMBridgeApplied        bool                   `json:"mdm_bridge_applied"`
+	ProCompatibilityApplied bool                   `json:"pro_compatibility_applied"`
+	LockAppRefreshed        bool                   `json:"lock_app_refreshed"`
+	PreLoginSessionRefresh  *PreLoginRefreshResult `json:"pre_login_session_refresh,omitempty"`
+	Warnings                []string               `json:"warnings,omitempty"`
 }
 
 type ApplyOptions struct {

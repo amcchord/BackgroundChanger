@@ -39,14 +39,18 @@ The old identifiers remain only as explicit compatibility constants and ownershi
 6. On Windows Pro, back up and enable only the `MDM_SharedPC.SetEduPolicies` compatibility switch required by Personalization CSP.
 7. Copy the JPEG to the space-free `C:\ProgramData\WallpaperIdentityCSP` delivery cache and apply the documented `MDM_Personalization` WMI bridge. This class is explicitly partitioned for LocalSystem.
 8. Read back the exact URL and wait for Personalization CSP status `1`; on Pro, both that proof and verified `SetEduPolicies` are mandatory.
-9. If `LockApp.exe` is present, terminate only that presentation process so Windows recreates it using the new versioned path.
-10. Atomically write `status.json`, retain the newest four backgrounds, and append a diagnostic log entry.
+9. On the boot-settled refresh only, query Windows sessions and processes. If every session has an empty user name and the physical console is connected with exactly one `LogonUI`, one `winlogon`, and no Explorer, write a stable `Win32_OperatingSystem.LastBootUpTime` fence, recheck after 500 ms, then call `WTSDisconnectSession` asynchronously for that empty console.
+10. Windows recreates the unauthenticated console under a new session ID, regenerating its protected lock-screen bitmap cache from the already-verified current CSP image. A same-boot service restart, repair, or upgrade observes the fence and cannot repeat the transition.
+11. If `LockApp.exe` is present for a later user-owned lock screen, terminate only that presentation process so Windows recreates it using the new versioned path.
+12. Atomically write `status.json`, retain the newest four backgrounds, and append a diagnostic log entry.
 
 The service reports `Running` promptly, then performs its initial render on one serialized worker. This avoids exhausting the Service Control Manager start window when the CSP provider is slow. A second render follows 20 seconds later so network and service state can settle; timer, session, power, and RMM requests use that same worker. Stop and shutdown allow the worker up to 30 seconds to drain, then release Windows so policy-provider latency cannot indefinitely block shutdown.
 
 ## Safety choices
 
 - `LogonUI.exe` is never terminated or injected into.
+- `WTSDisconnectSession` is called only for an unauthenticated physical-console session; any non-empty WTS user, Explorer process, missing login process, session change, or explicit configuration opt-out causes a skip.
+- The console transition is fenced once per stable Windows boot identity before the API call, so a service failure or repair cannot create a refresh loop.
 - No credential provider is installed and no credential data is inspected.
 - The service has no listener, remote API, updater, or outbound network dependency.
 - Hostname and the generated timestamp cannot be disabled.
@@ -58,7 +62,7 @@ The service reports `Running` promptly, then performs its initial render on one 
 
 Microsoft supports the Group Policy lock-screen setting on Enterprise, Education, IoT Enterprise, and Server. Personalization CSP has separate edition requirements. Microsoft documents `SetEduPolicies` as a Pro compatibility path; W:ID enables that single setting by default and clearly surfaces its three user-policy effects: advertising ID, Windows tips, and Microsoft consumer experiences are disabled. Windows Home remains unsupported.
 
-Successful collection and policy verification do not prove which bitmap an already-running `LogonUI` instance is displaying. Windows can retain the previous verified lock-screen bitmap for its first pre-login frame after boot, even when W:ID's new boot-generated file contains a changed IP address and Personalization CSP reports status `1` for it. W:ID exposes the age through the mandatory generated timestamp and deliberately avoids unsupported credential-provider replacement, `LogonUI` termination, or boot-delay hooks.
+Windows can retain the previous verified bitmap in `LogonUI`'s protected cache for the first pre-login frame, and the first service render can precede DHCP lease replacement. W:ID does not claim that early frame as current. It waits for the boot-settled render, verifies the exact CSP image, then uses the documented WTS disconnect operation to recreate only the empty console. In the Windows 11 Pro validation guest, the old `10.77.0.3` frame was replaced by the new `10.0.2.15` frame about 55 seconds after power-on, including a roughly five-second Windows-owned transition. If a user is already authenticated or the feature is disabled, W:ID leaves the session untouched and the mandatory generated timestamp exposes the displayed image's age.
 
 Primary references:
 
@@ -66,6 +70,9 @@ Primary references:
 - [ADMX Control Panel Display policy mapping](https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-controlpaneldisplay)
 - [Personalization CSP](https://learn.microsoft.com/windows/client-management/mdm/personalization-csp)
 - [Shared PC technical reference](https://learn.microsoft.com/windows/configuration/shared-pc/shared-pc-technical)
+- [WTSDisconnectSession function](https://learn.microsoft.com/windows/win32/api/wtsapi32/nf-wtsapi32-wtsdisconnectsession)
+- [WTS session information classes](https://learn.microsoft.com/windows/win32/api/wtsapi32/ne-wtsapi32-wts_info_class)
+- [Win32_OperatingSystem class](https://learn.microsoft.com/windows/win32/cimwin32prov/win32-operatingsystem)
 - [`MDM_SharedPC` WMI class](https://learn.microsoft.com/windows/win32/dmwmibridgeprov/mdm-sharedpc)
 - [`MDM_Personalization` WMI class](https://learn.microsoft.com/windows/win32/dmwmibridgeprov/mdm-personalization)
 - [Show clear logon background policy](https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-logon#disableacrylicbackgroundonlogon)

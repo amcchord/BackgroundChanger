@@ -69,6 +69,16 @@ func (e *Engine) Refresh(reason string) (Status, error) {
 		}
 		return e.fail(reason, status, fmt.Errorf("%s", message))
 	}
+	// The initial service render can precede DHCP lease replacement. Rotate the
+	// empty console only after the existing boot-settled refresh has gathered
+	// the post-boot network state and Windows has accepted that exact image.
+	if shouldRefreshPreLogin(reason, cfg.RefreshLoginScreenBoot) {
+		refresh, refreshErr := loginscreen.RefreshPreLoginSession(paths.PreLoginRefreshMarker())
+		status.Apply.PreLoginSessionRefresh = &refresh
+		if refreshErr != nil {
+			status.Apply.Warnings = append(status.Apply.Warnings, "pre-login session refresh: "+refreshErr.Error())
+		}
+	}
 	status.Success = true
 	status.CompletedAt = time.Now()
 	if err := writeStatus(status); err != nil {
@@ -80,6 +90,10 @@ func (e *Engine) Refresh(reason string) (Status, error) {
 		e.logf("warning: %s", warning)
 	}
 	return status, nil
+}
+
+func shouldRefreshPreLogin(reason string, enabled bool) bool {
+	return enabled && reason == "boot-settled"
 }
 
 func effectivePolicyApplied(nativeSupported, professional, proCompatibilityConfigured bool, apply loginscreen.ApplyResult) bool {

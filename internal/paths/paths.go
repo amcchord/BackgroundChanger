@@ -71,6 +71,9 @@ func ProCompatibilityBackupFile() string {
 	return filepath.Join(DataDir(), "pro-compatibility-backup.json")
 }
 func MDMRestoreMarker() string { return filepath.Join(DataDir(), "mdm-policy-restore.txt") }
+func PreLoginRefreshMarker() string {
+	return filepath.Join(DataDir(), "pre-login-refresh.json")
+}
 
 func LegacyConfigFile() string       { return filepath.Join(LegacyDataDir(), "config.yml") }
 func LegacyStatusFile() string       { return filepath.Join(LegacyDataDir(), "status.json") }

@@ -7,6 +7,9 @@ refresh_minutes: 5
 # Required on Windows Pro. This enables Microsoft's SetEduPolicies compatibility
 # switch, which disables Windows tips, advertising ID, and consumer experiences.
 enable_pro_compatibility: true
+# Windows owns a boot-time bitmap cache. When no user is signed in, rotate the
+# empty console session once per boot so it reloads the newly generated image.
+refresh_login_screen_on_boot: true
 base_image: ""
 width: 0
 height: 0

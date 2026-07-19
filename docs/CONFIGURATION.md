@@ -20,6 +20,7 @@ Set `preset: custom` to tune individual fields. Hostname and the timezone-qualif
 preset: custom
 refresh_minutes: 5
 enable_pro_compatibility: true
+refresh_login_screen_on_boot: true
 base_image: "C:\\Windows\\Web\\Wallpaper\\Windows\\img0.jpg"
 width: 0
 height: 0
@@ -46,6 +47,7 @@ show:
 | `preset` | `identity`, `balanced`, `operations`, or `custom` |
 | `refresh_minutes` | Timer interval from 1 to 1440 minutes; restart the service after changing it |
 | `enable_pro_compatibility` | On Pro, enable Microsoft's `SetEduPolicies` requirement; defaults to `true` and disables tips, advertising ID, and consumer experiences. It does not enable Shared PC mode, account cleanup, kiosk, power, or storage settings. |
+| `refresh_login_screen_on_boot` | Defaults to `true`. After the boot-settled image is accepted, rotate only an empty physical-console session once per Windows boot so `LogonUI` rebuilds its bitmap cache. It is skipped if any user is signed in or a console safety check fails. Set `false` to keep Windows' original cache behavior. |
 | `base_image` | Optional absolute path to a local JPEG or PNG |
 | `width`, `height` | Output dimensions; leave both `0` for current display size, or set both between 800×600 and 7680×4320 |
 | `show.os` | Windows product and release |
@@ -66,6 +68,8 @@ To apply display edits immediately from an elevated PowerShell window:
 ```
 
 Invalid YAML or out-of-range values do not replace the last successful background. The error is recorded in `C:\ProgramData\Wallpaper Identity\status.json` and `WallpaperIdentity.log` for diagnosis.
+
+The boot login-screen rotation can briefly show a black or clock-only frame while Windows recreates the empty console. W:ID records its once-per-boot fence in `pre-login-refresh.json`; restarting or repairing the service cannot repeat the transition in the same boot. The service never terminates `LogonUI.exe` and never rotates an authenticated session.
 
 For RMM deployment, validate and import a prepared file atomically:
 

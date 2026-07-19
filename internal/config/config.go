@@ -46,6 +46,7 @@ type Config struct {
 	Preset                 string     `json:"preset" yaml:"preset"`
 	RefreshMinutes         int        `json:"refresh_minutes" yaml:"refresh_minutes"`
 	EnableProCompatibility bool       `json:"enable_pro_compatibility" yaml:"enable_pro_compatibility"`
+	RefreshLoginScreenBoot bool       `json:"refresh_login_screen_on_boot" yaml:"refresh_login_screen_on_boot"`
 	BaseImage              string     `json:"base_image,omitempty" yaml:"base_image"`
 	Width                  int        `json:"width,omitempty" yaml:"width"`
 	Height                 int        `json:"height,omitempty" yaml:"height"`
@@ -59,7 +60,10 @@ func Default() Config {
 
 func ForPreset(name string) (Config, error) {
 	name = strings.ToLower(strings.TrimSpace(name))
-	cfg := Config{Preset: name, RefreshMinutes: 5, EnableProCompatibility: true}
+	cfg := Config{
+		Preset: name, RefreshMinutes: 5, EnableProCompatibility: true,
+		RefreshLoginScreenBoot: true,
+	}
 	switch name {
 	case PresetIdentity:
 		cfg.Show = Visibility{OS: true, Build: true, IP: true, Serial: true}
@@ -129,6 +133,7 @@ type diskConfig struct {
 	Preset                 string      `json:"preset" yaml:"preset"`
 	RefreshMinutes         *int        `json:"refresh_minutes" yaml:"refresh_minutes"`
 	EnableProCompatibility *bool       `json:"enable_pro_compatibility" yaml:"enable_pro_compatibility"`
+	RefreshLoginScreenBoot *bool       `json:"refresh_login_screen_on_boot" yaml:"refresh_login_screen_on_boot"`
 	BaseImage              string      `json:"base_image,omitempty" yaml:"base_image,omitempty"`
 	Width                  int         `json:"width,omitempty" yaml:"width,omitempty"`
 	Height                 int         `json:"height,omitempty" yaml:"height,omitempty"`
@@ -172,6 +177,9 @@ func decode(b []byte, legacyJSON bool) (Config, error) {
 	}
 	if raw.EnableProCompatibility != nil {
 		cfg.EnableProCompatibility = *raw.EnableProCompatibility
+	}
+	if raw.RefreshLoginScreenBoot != nil {
+		cfg.RefreshLoginScreenBoot = *raw.RefreshLoginScreenBoot
 	}
 	cfg.BaseImage, cfg.Width, cfg.Height = raw.BaseImage, raw.Width, raw.Height
 	// Named presets are authoritative, so changing only the preset value is a
@@ -225,7 +233,7 @@ func Save(path string, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	header := []byte("# Wallpaper Identity (W:ID) power-user configuration.\n# Hostname and the Generated at timestamp are always shown.\n# Windows Pro compatibility uses Microsoft's SetEduPolicies switch.\n# Set preset to custom after changing individual show values.\n")
+	header := []byte("# Wallpaper Identity (W:ID) power-user configuration.\n# Hostname and the Generated at timestamp are always shown.\n# Windows Pro compatibility uses Microsoft's SetEduPolicies switch.\n# An empty pre-login console is refreshed once after each boot.\n# Set preset to custom after changing individual show values.\n")
 	b = append(header, b...)
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, b, 0o644); err != nil {
