@@ -1,505 +1,326 @@
-// Package loginscreen provides functionality for managing Windows login screen backgrounds.
+// Package loginscreen applies the generated image to Windows machine policy.
 package loginscreen
 
 import (
+	"context"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/json"
 	"fmt"
-	"image"
-	"image/jpeg"
-	"image/png"
-	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
+	"unicode/utf16"
 
+	"github.com/amcchord/BackgroundChanger/internal/paths"
 	"golang.org/x/sys/windows/registry"
 )
 
-var (
-	// BackupDir is the directory where we store the original background backup.
-	// Uses PROGRAMDATA environment variable to support non-standard Windows installations.
-	BackupDir = filepath.Join(os.Getenv("PROGRAMDATA"), "BgStatusService")
-	// BackupFileName is the name of the backup file.
-	BackupFileName = "original_background.jpg"
-)
+const personalizationPolicy = `SOFTWARE\Policies\Microsoft\Windows\Personalization`
+const systemPolicy = `SOFTWARE\Policies\Microsoft\Windows\System`
 
-// GetBackupPath returns the full path to the backup file.
-func GetBackupPath() string {
-	return filepath.Join(BackupDir, BackupFileName)
+type policyValue struct {
+	Exists bool   `json:"exists"`
+	String string `json:"string,omitempty"`
+	DWORD  uint32 `json:"dword,omitempty"`
 }
 
-// HasBackup checks if a backup of the original login screen exists.
-func HasBackup() bool {
-	_, err := os.Stat(GetBackupPath())
-	return err == nil
+type policyBackup struct {
+	LockScreenImage                 policyValue `json:"lock_screen_image"`
+	NoChangingLockScreen            policyValue `json:"no_changing_lock_screen"`
+	LockScreenOverlaysDisabled      policyValue `json:"lock_screen_overlays_disabled"`
+	DisableAcrylicBackgroundOnLogon policyValue `json:"disable_acrylic_background_on_logon"`
 }
 
-// GetBackupImage returns the path to the backed-up original image if it exists.
-func GetBackupImage() (string, error) {
-	backupPath := GetBackupPath()
-	if _, err := os.Stat(backupPath); err != nil {
-		return "", fmt.Errorf("backup does not exist: %v", err)
-	}
-	return backupPath, nil
+type ApplyResult struct {
+	GroupPolicyApplied bool     `json:"group_policy_applied"`
+	MDMBridgeApplied   bool     `json:"mdm_bridge_applied"`
+	LockAppRefreshed   bool     `json:"lock_app_refreshed"`
+	Warnings           []string `json:"warnings,omitempty"`
 }
 
-// BackupOriginalImage saves the given image as the original backup.
-func BackupOriginalImage(imagePath string) error {
-	// Create backup directory if it doesn't exist
-	err := os.MkdirAll(BackupDir, 0755)
+func Apply(imagePath string) ApplyResult {
+	result := ApplyResult{}
+	abs, err := filepath.Abs(imagePath)
 	if err != nil {
-		return fmt.Errorf("failed to create backup directory: %v", err)
+		result.Warnings = append(result.Warnings, err.Error())
+		return result
 	}
+	if err := applyGroupPolicy(abs); err != nil {
+		result.Warnings = append(result.Warnings, "group policy: "+err.Error())
+	} else {
+		result.GroupPolicyApplied = true
+	}
+	if err := applyMDMBridge(abs); err != nil {
+		result.Warnings = append(result.Warnings, "MDM bridge: "+err.Error())
+	} else {
+		result.MDMBridgeApplied = true
+	}
+	// LockApp owns only the lock-screen surface. If it is currently visible,
+	// Windows will recreate it and read the new versioned image path. We never
+	// terminate LogonUI, which owns the security-sensitive credential surface.
+	if refreshed, err := RefreshLockApp(); err != nil {
+		result.Warnings = append(result.Warnings, "LockApp refresh: "+err.Error())
+	} else {
+		result.LockAppRefreshed = refreshed
+	}
+	return result
+}
 
-	// Open source file
-	src, err := os.Open(imagePath)
+func applyGroupPolicy(imagePath string) error {
+	key, _, err := registry.CreateKey(registry.LOCAL_MACHINE, personalizationPolicy, registry.SET_VALUE)
 	if err != nil {
-		return fmt.Errorf("failed to open source image: %v", err)
+		return err
 	}
-	defer src.Close()
-
-	// Create destination file
-	backupPath := GetBackupPath()
-	dst, err := os.Create(backupPath)
+	defer key.Close()
+	if err := key.SetStringValue("LockScreenImage", imagePath); err != nil {
+		return err
+	}
+	if err := key.SetDWordValue("NoChangingLockScreen", 1); err != nil {
+		return err
+	}
+	if err := key.SetDWordValue("LockScreenOverlaysDisabled", 1); err != nil {
+		return err
+	}
+	logonKey, _, err := registry.CreateKey(registry.LOCAL_MACHINE, systemPolicy, registry.SET_VALUE)
 	if err != nil {
-		return fmt.Errorf("failed to create backup file: %v", err)
+		return err
 	}
-	defer dst.Close()
+	defer logonKey.Close()
+	// Microsoft's "Show clear logon background" policy keeps the status text
+	// readable after the user advances from the lock screen to credentials.
+	return logonKey.SetDWordValue("DisableAcrylicBackgroundOnLogon", 1)
+}
 
-	// Copy the file
-	_, err = io.Copy(dst, src)
+func applyMDMBridge(imagePath string) error {
+	fileURL := (&url.URL{Scheme: "file", Path: "/" + filepath.ToSlash(imagePath)}).String()
+	fileURL = strings.Replace(fileURL, "file:////", "file:///", 1)
+	quotedURL := strings.ReplaceAll(fileURL, "'", "''")
+	quotedBackup := strings.ReplaceAll(paths.MDMBackupFile(), "'", "''")
+	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
+$ns='root\cimv2\mdm\dmmap'
+$class='MDM_Personalization'
+$url='%s'
+$backup='%s'
+$instance=Get-CimInstance -Namespace $ns -ClassName $class -ErrorAction SilentlyContinue | Where-Object { $_.ParentID -eq './Vendor/MSFT' -and $_.InstanceID -eq 'Personalization' } | Select-Object -First 1
+if (-not (Test-Path -LiteralPath $backup)) {
+  $record=[pscustomobject]@{ Existed=($null -ne $instance); Url=$(if ($null -eq $instance) { '' } else { [string]$instance.LockScreenImageUrl }) }
+  $record | ConvertTo-Json -Compress | Set-Content -LiteralPath $backup -Encoding UTF8
+}
+if ($null -eq $instance) {
+  New-CimInstance -Namespace $ns -ClassName $class -Property @{ ParentID='./Vendor/MSFT'; InstanceID='Personalization'; LockScreenImageUrl=$url } | Out-Null
+} else {
+  Set-CimInstance -CimInstance $instance -Property @{ LockScreenImageUrl=$url } | Out-Null
+}`, quotedURL, quotedBackup)
+	powershell := filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+	if _, err := os.Stat(powershell); err != nil {
+		powershell = "powershell.exe"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodePowerShell(script))
+	cmd.SysProcAttr = hiddenProcessAttributes()
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		return fmt.Errorf("timed out")
+	}
 	if err != nil {
-		return fmt.Errorf("failed to copy image to backup: %v", err)
+		message := compactOutput(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		return fmt.Errorf("%s", message)
 	}
-
 	return nil
 }
 
-// InvalidateBackup removes the backup file so a new one will be created.
-func InvalidateBackup() error {
-	backupPath := GetBackupPath()
-	if _, err := os.Stat(backupPath); os.IsNotExist(err) {
-		// Already doesn't exist, nothing to do
+// RestoreMDMBridge rolls back the LocalSystem-only Personalization CSP value.
+// It intentionally leaves a value alone if another administrator or MDM has
+// replaced BackgroundChanger's URL since installation.
+func RestoreMDMBridge() error {
+	quotedBackup := strings.ReplaceAll(paths.MDMBackupFile(), "'", "''")
+	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
+$ns='root\cimv2\mdm\dmmap'
+$class='MDM_Personalization'
+$backup='%s'
+if (-not (Test-Path -LiteralPath $backup)) { return }
+$record=Get-Content -LiteralPath $backup -Raw | ConvertFrom-Json
+$instance=Get-CimInstance -Namespace $ns -ClassName $class -ErrorAction SilentlyContinue | Where-Object { $_.ParentID -eq './Vendor/MSFT' -and $_.InstanceID -eq 'Personalization' } | Select-Object -First 1
+if ($null -eq $instance) { return }
+$current=[string]$instance.LockScreenImageUrl
+if ($current -notmatch '(?i)BackgroundChanger[/\\]backgrounds[/\\]') { return }
+if ([bool]$record.Existed) {
+  Set-CimInstance -CimInstance $instance -Property @{ LockScreenImageUrl=[string]$record.Url } | Out-Null
+} elseif ([string]::IsNullOrEmpty([string]$instance.DesktopImageUrl)) {
+  Remove-CimInstance -CimInstance $instance
+} else {
+  Set-CimInstance -CimInstance $instance -Property @{ LockScreenImageUrl=$null } | Out-Null
+}`, quotedBackup)
+	powershell := filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+	if _, err := os.Stat(powershell); err != nil {
+		powershell = "powershell.exe"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodePowerShell(script))
+	cmd.SysProcAttr = hiddenProcessAttributes()
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		return fmt.Errorf("timed out")
+	}
+	if err != nil {
+		message := compactOutput(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		return fmt.Errorf("%s", message)
+	}
+	return nil
+}
+
+func RefreshLockApp() (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	check := exec.CommandContext(ctx, "tasklist.exe", "/FI", "IMAGENAME eq LockApp.exe", "/FO", "CSV", "/NH")
+	check.SysProcAttr = hiddenProcessAttributes()
+	output, err := check.Output()
+	if err != nil || !strings.Contains(strings.ToLower(string(output)), "lockapp.exe") {
+		return false, nil
+	}
+	kill := exec.CommandContext(ctx, "taskkill.exe", "/F", "/IM", "LockApp.exe")
+	kill.SysProcAttr = hiddenProcessAttributes()
+	if output, err := kill.CombinedOutput(); err != nil {
+		return false, fmt.Errorf("%s", compactOutput(string(output)))
+	}
+	return true, nil
+}
+
+func BackupPolicies(path string) error {
+	if _, err := os.Stat(path); err == nil {
 		return nil
 	}
-	return os.Remove(backupPath)
+	backup := policyBackup{}
+	if key, err := registry.OpenKey(registry.LOCAL_MACHINE, personalizationPolicy, registry.QUERY_VALUE); err == nil {
+		backup.LockScreenImage = readStringValue(key, "LockScreenImage")
+		backup.NoChangingLockScreen = readDWORDValue(key, "NoChangingLockScreen")
+		backup.LockScreenOverlaysDisabled = readDWORDValue(key, "LockScreenOverlaysDisabled")
+		key.Close()
+	}
+	// Values left behind by the pre-v3 application are not useful restoration
+	// targets; treating them as absent completes the migration cleanly.
+	if strings.Contains(strings.ToLower(backup.LockScreenImage.String), `\bgstatusservice\`) {
+		backup.LockScreenImage = policyValue{}
+		backup.NoChangingLockScreen = policyValue{}
+		backup.LockScreenOverlaysDisabled = policyValue{}
+	}
+	if key, err := registry.OpenKey(registry.LOCAL_MACHINE, systemPolicy, registry.QUERY_VALUE); err == nil {
+		backup.DisableAcrylicBackgroundOnLogon = readDWORDValue(key, "DisableAcrylicBackgroundOnLogon")
+		key.Close()
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(backup, "", "  ")
+	if err != nil {
+		return err
+	}
+	b = append(b, '\n')
+	return os.WriteFile(path, b, 0o600)
 }
 
-// GetCurrentLoginScreenImage finds the current login screen background image.
-// It checks multiple locations in priority order.
-func GetCurrentLoginScreenImage() (string, error) {
-	// Priority 1: Check Group Policy registry for LockScreenImage
-	key, err := registry.OpenKey(
-		registry.LOCAL_MACHINE,
-		`SOFTWARE\Policies\Microsoft\Windows\Personalization`,
-		registry.QUERY_VALUE,
-	)
+func RestorePolicies(backupPath, ownedDataDir string) []error {
+	var errors []error
+	backup := policyBackup{}
+	if b, err := os.ReadFile(backupPath); err == nil {
+		if err := json.Unmarshal(b, &backup); err != nil {
+			errors = append(errors, err)
+		}
+	}
+	key, err := registry.OpenKey(registry.LOCAL_MACHINE, personalizationPolicy, registry.QUERY_VALUE|registry.SET_VALUE)
 	if err == nil {
-		defer key.Close()
-		path, _, err := key.GetStringValue("LockScreenImage")
-		if err == nil && path != "" {
-			if _, statErr := os.Stat(path); statErr == nil {
-				return path, nil
-			}
+		if current, _, valueErr := key.GetStringValue("LockScreenImage"); valueErr == nil && isOwnedPath(current, ownedDataDir) {
+			errors = append(errors, restoreStringValue(key, "LockScreenImage", backup.LockScreenImage)...)
+			errors = append(errors, restoreDWORDValue(key, "NoChangingLockScreen", backup.NoChangingLockScreen)...)
+			errors = append(errors, restoreDWORDValue(key, "LockScreenOverlaysDisabled", backup.LockScreenOverlaysDisabled)...)
 		}
+		key.Close()
+	} else if err != registry.ErrNotExist {
+		errors = append(errors, err)
 	}
-
-	// Priority 2: Check OOBE backgrounds folder
-	systemRoot := os.Getenv("SystemRoot")
-	oobeBackgrounds := filepath.Join(systemRoot, "System32", "oobe", "info", "backgrounds")
-	oobeDefault := filepath.Join(oobeBackgrounds, "backgroundDefault.jpg")
-	if _, err := os.Stat(oobeDefault); err == nil {
-		return oobeDefault, nil
-	}
-
-	// Priority 3: Check PersonalizationCSP registry
-	cspKey, err := registry.OpenKey(
-		registry.LOCAL_MACHINE,
-		`SOFTWARE\Microsoft\Windows\CurrentVersion\PersonalizationCSP`,
-		registry.QUERY_VALUE,
-	)
-	if err == nil {
-		defer cspKey.Close()
-		path, _, err := cspKey.GetStringValue("LockScreenImagePath")
-		if err == nil && path != "" {
-			if _, statErr := os.Stat(path); statErr == nil {
-				return path, nil
-			}
+	if key, err := registry.OpenKey(registry.LOCAL_MACHINE, systemPolicy, registry.QUERY_VALUE|registry.SET_VALUE); err == nil {
+		if current, _, valueErr := key.GetIntegerValue("DisableAcrylicBackgroundOnLogon"); valueErr == nil && current == 1 {
+			errors = append(errors, restoreDWORDValue(key, "DisableAcrylicBackgroundOnLogon", backup.DisableAcrylicBackgroundOnLogon)...)
 		}
+		key.Close()
+	} else if err != registry.ErrNotExist {
+		errors = append(errors, err)
 	}
-
-	// Priority 4: Check Windows Spotlight assets
-	localAppData := os.Getenv("LOCALAPPDATA")
-	if localAppData != "" {
-		spotlightDir := filepath.Join(localAppData, "Packages", "Microsoft.Windows.ContentDeliveryManager_cw5n1h2txyewy", "LocalState", "Assets")
-		if info, err := os.Stat(spotlightDir); err == nil && info.IsDir() {
-			// Find the largest file (likely the landscape wallpaper)
-			var largestFile string
-			var largestSize int64
-			entries, err := os.ReadDir(spotlightDir)
-			if err == nil {
-				for _, entry := range entries {
-					if entry.IsDir() {
-						continue
-					}
-					info, err := entry.Info()
-					if err != nil {
-						continue
-					}
-					if info.Size() > largestSize {
-						largestSize = info.Size()
-						largestFile = filepath.Join(spotlightDir, entry.Name())
-					}
-				}
-			}
-			if largestFile != "" && largestSize > 100000 { // At least 100KB to be a wallpaper
-				return largestFile, nil
-			}
-		}
-	}
-
-	// No existing login screen found
-	return "", fmt.Errorf("no existing login screen image found")
+	return errors
 }
 
-// SetLoginScreenImage sets the given image as the Windows login screen background.
-func SetLoginScreenImage(imagePath string) error {
-	// Convert to absolute path
-	absPath, err := filepath.Abs(imagePath)
-	if err != nil {
-		return fmt.Errorf("failed to get absolute path: %v", err)
-	}
+func readStringValue(key registry.Key, name string) policyValue {
+	value, _, err := key.GetStringValue(name)
+	return policyValue{Exists: err == nil, String: value}
+}
 
-	// Ensure the image exists
-	if _, err := os.Stat(absPath); err != nil {
-		return fmt.Errorf("image file does not exist: %v", err)
-	}
+func readDWORDValue(key registry.Key, name string) policyValue {
+	value, _, err := key.GetIntegerValue(name)
+	return policyValue{Exists: err == nil, DWORD: uint32(value)}
+}
 
-	// Try multiple methods
-	var anySuccess bool
-	var lastError error
-
-	// Method 1: PersonalizationCSP (MDM-style, works as SYSTEM for sign-in screen)
-	err = setLoginScreenViaPersonalizationCSP(absPath)
-	if err != nil {
-		lastError = err
-	} else {
-		anySuccess = true
-	}
-
-	// Method 2: Group Policy Registry (enterprise method for sign-in screen)
-	err = setLoginScreenViaGroupPolicy(absPath)
-	if err != nil {
-		if lastError == nil {
-			lastError = err
+func restoreStringValue(key registry.Key, name string, value policyValue) []error {
+	if value.Exists {
+		if err := key.SetStringValue(name, value.String); err != nil {
+			return []error{err}
 		}
-	} else {
-		anySuccess = true
+		return nil
 	}
-
-	// Method 3: Replace Windows default screen images (most aggressive)
-	err = setLoginScreenViaDefaultImages(absPath)
-	if err != nil {
-		if lastError == nil {
-			lastError = err
-		}
-	} else {
-		anySuccess = true
+	if err := key.DeleteValue(name); err != nil && err != registry.ErrNotExist {
+		return []error{err}
 	}
-
-	// Method 4: OOBE background folder (older Windows versions)
-	err = setLoginScreenViaOOBE(absPath)
-	if err != nil {
-		if lastError == nil {
-			lastError = err
-		}
-	} else {
-		anySuccess = true
-	}
-
-	// Method 5: WinRT API (only works in user context, not as SYSTEM)
-	err = setLoginScreenViaWinRT(absPath)
-	if err != nil {
-		if lastError == nil {
-			lastError = err
-		}
-	} else {
-		anySuccess = true
-	}
-
-	if !anySuccess {
-		return fmt.Errorf("all login screen methods failed, last error: %v", lastError)
-	}
-
 	return nil
 }
 
-// setLoginScreenViaPersonalizationCSP uses the MDM/Intune registry method.
-// This is designed for enterprise deployment and works well from SYSTEM context.
-func setLoginScreenViaPersonalizationCSP(absPath string) error {
-	key, _, err := registry.CreateKey(
-		registry.LOCAL_MACHINE,
-		`SOFTWARE\Microsoft\Windows\CurrentVersion\PersonalizationCSP`,
-		registry.ALL_ACCESS,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to create PersonalizationCSP key: %v", err)
-	}
-	defer key.Close()
-
-	// Set the lock screen image path
-	err = key.SetStringValue("LockScreenImagePath", absPath)
-	if err != nil {
-		return fmt.Errorf("failed to set LockScreenImagePath: %v", err)
-	}
-
-	// Set the URL (same as path for local files)
-	err = key.SetStringValue("LockScreenImageUrl", absPath)
-	if err != nil {
-		return fmt.Errorf("failed to set LockScreenImageUrl: %v", err)
-	}
-
-	// Set status to 1 (enabled)
-	err = key.SetDWordValue("LockScreenImageStatus", 1)
-	if err != nil {
-		return fmt.Errorf("failed to set LockScreenImageStatus: %v", err)
-	}
-
-	return nil
-}
-
-// setLoginScreenViaDefaultImages replaces the Windows default lock screen images.
-// This is the most aggressive method - directly overwrites system default images.
-func setLoginScreenViaDefaultImages(absPath string) error {
-	systemRoot := os.Getenv("SystemRoot")
-	if systemRoot == "" {
-		systemRoot = `C:\Windows`
-	}
-
-	// Load the source image
-	srcImg, err := LoadImage(absPath)
-	if err != nil {
-		return fmt.Errorf("failed to load source image: %v", err)
-	}
-
-	// Windows default lock screen images location
-	screenDir := filepath.Join(systemRoot, "Web", "Screen")
-
-	// Replace all default screen images (img100.jpg through img105.jpg)
-	for i := 100; i <= 105; i++ {
-		targetPath := filepath.Join(screenDir, fmt.Sprintf("img%d.jpg", i))
-
-		// Try to take ownership and set permissions (requires admin)
-		takeOwnership(targetPath)
-
-		// Save the image
-		err := SaveImage(srcImg, targetPath)
-		if err != nil {
-			// Continue trying other files even if one fails
-			continue
+func restoreDWORDValue(key registry.Key, name string, value policyValue) []error {
+	if value.Exists {
+		if err := key.SetDWordValue(name, value.DWORD); err != nil {
+			return []error{err}
 		}
+		return nil
 	}
-
+	if err := key.DeleteValue(name); err != nil && err != registry.ErrNotExist {
+		return []error{err}
+	}
 	return nil
 }
 
-// takeOwnership attempts to take ownership of a file (for replacing system files)
-func takeOwnership(filePath string) {
-	// Use takeown and icacls to get write access to protected system files
-	exec.Command("takeown", "/f", filePath).Run()
-	exec.Command("icacls", filePath, "/grant", "Administrators:F").Run()
+func isOwnedPath(value, dataDir string) bool {
+	valueAbs, err1 := filepath.Abs(value)
+	dataAbs, err2 := filepath.Abs(dataDir)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	valueLower := strings.ToLower(filepath.Clean(valueAbs))
+	dataLower := strings.ToLower(filepath.Clean(dataAbs)) + string(os.PathSeparator)
+	return strings.HasPrefix(valueLower, dataLower)
 }
 
-// setLoginScreenViaGroupPolicy sets the login screen using Group Policy registry keys.
-func setLoginScreenViaGroupPolicy(absPath string) error {
-	// Open or create the Personalization policy key
-	key, _, err := registry.CreateKey(
-		registry.LOCAL_MACHINE,
-		`SOFTWARE\Policies\Microsoft\Windows\Personalization`,
-		registry.ALL_ACCESS,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to open Personalization policy key: %v", err)
+func encodePowerShell(script string) string {
+	encoded := utf16.Encode([]rune(script))
+	b := make([]byte, len(encoded)*2)
+	for i, value := range encoded {
+		binary.LittleEndian.PutUint16(b[i*2:], value)
 	}
-	defer key.Close()
-
-	// Set LockScreenImage to the image path
-	err = key.SetStringValue("LockScreenImage", absPath)
-	if err != nil {
-		return fmt.Errorf("failed to set LockScreenImage: %v", err)
-	}
-
-	// Also need to ensure DisableLogonBackgroundImage is set to 0 in the System key
-	sysKey, _, err := registry.CreateKey(
-		registry.LOCAL_MACHINE,
-		`SOFTWARE\Policies\Microsoft\Windows\System`,
-		registry.ALL_ACCESS,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to open System policy key: %v", err)
-	}
-	defer sysKey.Close()
-
-	// Set DisableLogonBackgroundImage to 0 (enable custom background)
-	err = sysKey.SetDWordValue("DisableLogonBackgroundImage", 0)
-	if err != nil {
-		return fmt.Errorf("failed to set DisableLogonBackgroundImage: %v", err)
-	}
-
-	return nil
+	return base64.StdEncoding.EncodeToString(b)
 }
 
-// setLoginScreenViaOOBE copies the image to the OOBE backgrounds folder.
-func setLoginScreenViaOOBE(absPath string) error {
-	// Create the backgrounds directory if it doesn't exist
-	systemRoot := os.Getenv("SystemRoot")
-	backgroundsDir := filepath.Join(systemRoot, "System32", "oobe", "info", "backgrounds")
-	err := os.MkdirAll(backgroundsDir, 0755)
-	if err != nil {
-		return fmt.Errorf("failed to create backgrounds directory: %v", err)
+func compactOutput(value string) string {
+	value = strings.Join(strings.Fields(value), " ")
+	if len(value) > 500 {
+		return value[:497] + "..."
 	}
-
-	// Load the source image
-	srcFile, err := os.Open(absPath)
-	if err != nil {
-		return fmt.Errorf("failed to open source image: %v", err)
-	}
-	defer srcFile.Close()
-
-	// Decode the image to ensure it's valid and can be re-encoded as JPEG
-	img, format, err := image.Decode(srcFile)
-	if err != nil {
-		return fmt.Errorf("failed to decode image: %v", err)
-	}
-
-	// The target file must be named backgroundDefault.jpg
-	targetPath := filepath.Join(backgroundsDir, "backgroundDefault.jpg")
-
-	// Create the target file
-	dstFile, err := os.Create(targetPath)
-	if err != nil {
-		return fmt.Errorf("failed to create target file: %v", err)
-	}
-	defer dstFile.Close()
-
-	// Encode as JPEG
-	if format == "jpeg" || format == "jpg" {
-		// Re-open and copy directly for JPEG
-		srcFile.Seek(0, 0)
-		_, err = io.Copy(dstFile, srcFile)
-	} else {
-		// Convert to JPEG
-		err = jpeg.Encode(dstFile, img, &jpeg.Options{Quality: 90})
-	}
-	if err != nil {
-		return fmt.Errorf("failed to save image: %v", err)
-	}
-
-	// Enable OEM background in registry
-	key, _, err := registry.CreateKey(
-		registry.LOCAL_MACHINE,
-		`SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI\Background`,
-		registry.ALL_ACCESS,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to open LogonUI Background key: %v", err)
-	}
-	defer key.Close()
-
-	err = key.SetDWordValue("OEMBackground", 1)
-	if err != nil {
-		return fmt.Errorf("failed to set OEMBackground: %v", err)
-	}
-
-	return nil
+	return value
 }
-
-// setLoginScreenViaWinRT uses PowerShell and WinRT API to set the lock screen.
-func setLoginScreenViaWinRT(absPath string) error {
-	psScript := fmt.Sprintf(`
-$ErrorActionPreference = "Stop"
-
-Add-Type -AssemblyName System.Runtime.WindowsRuntime
-
-$asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`+"`"+`1' })[0]
-
-Function Await($WinRtTask, $ResultType) {
-    $asTask = $asTaskGeneric.MakeGenericMethod($ResultType)
-    $netTask = $asTask.Invoke($null, @($WinRtTask))
-    $netTask.Wait(-1) | Out-Null
-    $netTask.Result
-}
-
-Function AwaitAction($WinRtTask) {
-    $asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and !$_.IsGenericMethod })[0]
-    $netTask = $asTask.Invoke($null, @($WinRtTask))
-    $netTask.Wait(-1) | Out-Null
-}
-
-[Windows.System.UserProfile.LockScreen,Windows.System.UserProfile,ContentType=WindowsRuntime] | Out-Null
-[Windows.Storage.StorageFile,Windows.Storage,ContentType=WindowsRuntime] | Out-Null
-
-$imagePath = '%s'
-$file = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($imagePath)) ([Windows.Storage.StorageFile])
-AwaitAction ([Windows.System.UserProfile.LockScreen]::SetImageFileAsync($file))
-`, absPath)
-
-	cmd := exec.Command("powershell.exe",
-		"-NoProfile",
-		"-ExecutionPolicy", "Bypass",
-		"-Command", psScript,
-	)
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("PowerShell WinRT failed: %v\nOutput: %s", err, string(output))
-	}
-
-	return nil
-}
-
-// LoadImage loads an image from the given path.
-func LoadImage(imagePath string) (image.Image, error) {
-	file, err := os.Open(imagePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open image: %v", err)
-	}
-	defer file.Close()
-
-	img, _, err := image.Decode(file)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode image: %v", err)
-	}
-
-	return img, nil
-}
-
-// SaveImage saves an image to the given path as JPEG.
-func SaveImage(img image.Image, imagePath string) error {
-	file, err := os.Create(imagePath)
-	if err != nil {
-		return fmt.Errorf("failed to create file: %v", err)
-	}
-	defer file.Close()
-
-	ext := strings.ToLower(filepath.Ext(imagePath))
-	if ext == ".png" {
-		return png.Encode(file, img)
-	}
-
-	// Default to JPEG
-	return jpeg.Encode(file, img, &jpeg.Options{Quality: 95})
-}
-
-// CreateDefaultBackground creates a solid dark background image.
-func CreateDefaultBackground(width, height int) image.Image {
-	img := image.NewRGBA(image.Rect(0, 0, width, height))
-	// Fill with dark gray (#1a1a1a)
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
-			img.Set(x, y, image.Black)
-		}
-	}
-	return img
-}
-

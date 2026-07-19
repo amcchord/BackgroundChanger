@@ -1,205 +1,111 @@
 # BackgroundChanger
 
-A Windows toolkit for customizing your desktop, lock screen, and login screen backgrounds.
+BackgroundChanger puts live, fastfetch-style machine identity and health information on the Windows lock and sign-in background—before anyone logs in.
 
-## Tools Included
+![BackgroundChanger on the Windows pre-login screen](assets/screenshots/prelogin.png)
 
-### bgchanger.exe
-A command-line tool that sets your desktop wallpaper, lock screen, and login screen background — all at once.
+It is intended for labs, equipment rooms, VM fleets, classrooms, and other places where visually identical computers are hard to tell apart.
 
-### bgStatusService.exe
-A scheduled task that displays system information (neofetch-style) on your login screen, so you can identify machines without logging in. Perfect for IT environments and VM deployments.
+## What it shows
 
-### bgStatusServiceSetup.exe
-A GUI installer that downloads and installs the latest bgStatusService from GitHub. No scripts required — just double-click to install or uninstall.
+- Hostname, Windows version/build, BIOS serial number, and IPv4 addresses
+- CPU, GPU, memory, system-disk usage, and uptime
+- Running-service count and the state of Defender, DHCP, DNS, Event Log, time sync, and Windows Update
+- Pending-reboot state and the exact refresh time
 
----
+The layout reserves Windows 11's top-center clock area and Windows 10's lower-left clock area. The installer also enables Microsoft's **Show clear logon background** policy so the information remains readable on the credential screen.
 
-## bgchanger
+## Install
 
-### Features
+1. Download `BackgroundChangerSetup.exe` from the [latest release](https://github.com/amcchord/BackgroundChanger/releases/latest).
+2. Open it and select **Install**.
+3. Approve the Windows administrator prompt.
 
-- **One command, three screens** — Sets desktop, lock screen, and login screen simultaneously
-- **Random wallpapers** — Run with no arguments to get a beautiful random wallpaper from [slide.recipes](https://www.slide.recipes/bg/)
-- **Local files** — Set any image from your computer
-- **Directories** — Pick a random image from a local folder
-- **URLs** — Download and set images directly from the web
-- **Auto-elevation** — Automatically requests admin privileges when needed
-- **Windows 10/11** — Multiple methods for maximum compatibility
+The installer is self-contained and works offline. It installs one automatic LocalSystem service and immediately generates the first background.
 
-### Usage
+![BackgroundChanger graphical installer](assets/screenshots/installer.png)
 
+Run the same executable again to repair, upgrade, or uninstall. It is also registered in Windows **Apps & features**.
+
+## Supported Windows editions
+
+| Edition | Support |
+|---|---|
+| Windows 10/11 Enterprise or Education | Supported |
+| Windows 10/11 IoT Enterprise | Supported |
+| Windows Server | Supported through Group Policy |
+| Windows Pro | Not supported by default; tested Pro systems accept the writes but ignore the image |
+| Windows Home | Not supported |
+
+This boundary comes from Windows policy support, not an installer check. Microsoft documents that the Personalization CSP works on Pro only when the device is already configured with SharedPC `SetEduPolicies` or `BootToCloudPCEnhanced`. BackgroundChanger does not silently enable either broader device-management mode. It reports the detected edition in its status file and UI instead of claiming that the background is active. See Microsoft's [lock-screen configuration matrix](https://learn.microsoft.com/windows/configuration/background/), [Personalization CSP requirements](https://learn.microsoft.com/windows/client-management/mdm/personalization-csp), and [Shared PC policy effects](https://learn.microsoft.com/windows/configuration/shared-pc/shared-pc-technical).
+
+## Why this version refreshes before sign-in
+
+Version 3 replaces the old scheduled-task approach with a normal auto-start Windows service:
+
+1. The Service Control Manager starts `BackgroundChanger` as LocalSystem during boot, before interactive logon.
+2. The service gathers current machine state and renders a new, versioned JPEG in `C:\ProgramData\BackgroundChanger\backgrounds`.
+3. It applies Microsoft's machine lock-screen Group Policy and, where available, the LocalSystem-only `MDM_Personalization` WMI bridge.
+4. It refreshes after boot settles, every five minutes, and on logon, logoff, lock, and power events.
+5. If the lock screen is already visible, it restarts only `LockApp.exe`. It never terminates the security-sensitive `LogonUI.exe` process.
+
+Rotating the image filename on every render prevents Windows from reusing a stale cached image. Microsoft documents that [auto-start services run during system boot](https://learn.microsoft.com/windows/win32/services/automatically-starting-services) and that the [`MDM_Personalization` class](https://learn.microsoft.com/windows/win32/dmwmibridgeprov/mdm-personalization) is available in the LocalSystem partition.
+
+More detail is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Configuration and diagnostics
+
+BackgroundChanger creates:
+
+```text
+C:\Program Files\BackgroundChanger\BackgroundChanger.exe
+C:\ProgramData\BackgroundChanger\config.json
+C:\ProgramData\BackgroundChanger\status.json
+C:\ProgramData\BackgroundChanger\BackgroundChanger.log
+C:\ProgramData\BackgroundChanger\backgrounds\
 ```
-bgchanger [option]
+
+Default configuration:
+
+```json
+{
+  "refresh_minutes": 5
+}
 ```
 
-| Option | Description |
-|--------|-------------|
-| *(no args)* | Download a random wallpaper from slide.recipes |
-| `<image_path>` | Set a specific image as wallpaper |
-| `<directory>` | Pick a random image from a local directory |
-| `<url>` | Download and set an image from a URL |
-| `help` | Show help message |
+Optional settings:
 
-### Examples
+- `base_image`: absolute path to a local JPEG or PNG used behind the status panels
+- `width` and `height`: fixed output dimensions; both must be set together
+
+Restart the service after changing `refresh_minutes`. The status JSON records the last snapshot, policy results, image path, Windows-edition compatibility, and any warnings. The log is append-only and contains no credentials or product keys.
+
+Maintenance commands, run from an elevated shell:
 
 ```powershell
-# Get a random wallpaper
-bgchanger
-
-# Set a specific image
-bgchanger C:\Pictures\wallpaper.jpg
-
-# Random image from a folder
-bgchanger C:\Pictures\Wallpapers
-
-# Set from a URL
-bgchanger https://example.com/image.png
+BackgroundChanger.exe --refresh
+BackgroundChanger.exe --render C:\Temp\preview.jpg
+BackgroundChanger.exe --install --quiet
+BackgroundChanger.exe --uninstall --quiet
 ```
 
----
+## Build and test
 
-## bgStatusService
-
-A scheduled task that overlays system information on your login screen background. Perfect for IT environments where you need to identify machines at a glance — especially useful for VM deployments where machine identity changes.
-
-### Information Displayed
-
-**Right Panel (System Info):**
-- Computer name / Hostname
-- Windows version (correctly shows Windows 10 vs 11, with version like "24H2")
-- CPU model and core count
-- RAM amount
-- GPU model
-- IP address(es)
-- Disk space (used / total)
-- Serial number
-- System uptime
-- Timestamp when the graphic was generated
-
-**Left Panel (Services Status):**
-- Running services count
-- Critical services status (DHCP, DNS, Windows Update, Defender, etc.)
-- Failed services list (auto-start services that aren't running)
-- Windows Server support (shows additional server-specific services like AD, IIS, DNS Server, DHCP Server, SQL Server, Hyper-V)
-
-### Features
-
-- **Runs at boot** — Updates the login screen with fresh system info before first login
-- **LogonUI refresh** — On boot, gracefully restarts the login screen to ensure updates are visible immediately
-- **Lock screen updates** — Also updates when you lock your screen or log off (without forcing a restart)
-- **Smart text color** — Automatically chooses white or black text based on background brightness
-- **Resolution-aware scaling** — Detects your display resolution and scales text appropriately (readable from 1024x768, compact on 4K+)
-- **Dual panel layout** — Services status on the left, system info on the right
-- **Windows Server support** — Automatically detects Server editions and monitors server-specific services
-- **Preserves your wallpaper** — Backs up the original image and applies overlay on top
-- **Integrates with bgchanger** — When you change wallpaper with bgchanger, the task uses the new image
-- **VM-ready** — Designed for scenarios where a machine is cloned or virtualized and needs to display its new identity
-
-### How It Works
-
-The service installs two scheduled tasks:
-1. **BgStatusServiceBoot** — Runs at system startup with high priority. Generates fresh system info overlay and restarts LogonUI to ensure the login screen shows current information.
-2. **BgStatusServiceLock** — Runs when you lock your screen or log off. Updates the image for the next time the login screen is shown (no LogonUI restart needed).
-
-### Installation (Recommended: GUI Installer)
-
-1. Download `bgStatusServiceSetup.exe` from [Releases](https://github.com/amcchord/BackgroundChanger/releases)
-
-2. Double-click to run — it will request admin privileges automatically
-
-3. Choose "Install" and follow the prompts
-
-4. The tasks will run automatically on next boot, or test immediately by pressing Win+L
-
-### Installation (PowerShell Scripts)
-
-Alternatively, download both `bgStatusService.exe` and the `install` folder:
+Requirements: Windows and Go 1.24 or newer.
 
 ```powershell
-.\install\install.ps1
+go test ./...
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -Version v3.0.0
 ```
 
-### Uninstallation
+Release output is written to `dist\BackgroundChangerSetup.exe` with `dist\SHA256SUMS.txt`. The compiled executable includes the service, installer UI, renderer, font, and Windows manifest.
 
-**Using the GUI installer:**
-1. Run `bgStatusServiceSetup.exe`
-2. Choose "Uninstall"
+The release was validated in parallel clean VirtualBox VMs on Windows 10 Enterprise 22H2, Windows 11 Enterprise 25H2, and Windows 11 Pro 25H2. Both Enterprise guests displayed and refreshed the image before sign-in. The Pro guest provided the expected negative result: the service and policy writes succeeded, but Windows retained its stock image. The reproducible matrix and evidence are in [docs/TESTING.md](docs/TESTING.md).
 
-**Using PowerShell:**
-```powershell
-.\install\uninstall.ps1
-```
+## Uninstall behavior
 
-The uninstaller will offer to restore your original login screen background.
-
-### Testing Without Installing
-
-Run the executable directly (as Administrator) to test:
-```powershell
-Start-Process .\bgStatusService.exe -Verb RunAs
-```
-
-Then press `Win+L` to see the result.
-
----
-
-## Supported Image Formats
-
-- JPG / JPEG
-- PNG
-- BMP
-
-## Notes
-
-- **Admin required** — Both tools require administrator privileges for lock/login screen changes
-- **Lock screen** — Press `Win+L` to see changes immediately
-- **Login screen** — Sign out or restart to see changes
-- **Non-C: drives** — Fully supports Windows installed on any drive
-
-## Building from Source
-
-Requires Go 1.21+
-
-```bash
-git clone https://github.com/amcchord/BackgroundChanger.git
-cd BackgroundChanger
-
-# Build bgchanger
-go build -o bgchanger.exe ./cmd/changer
-
-# Build bgStatusService
-go build -o bgStatusService.exe ./cmd/statusservice
-
-# Build bgStatusServiceSetup (GUI installer)
-go build -ldflags -H=windowsgui -o bgStatusServiceSetup.exe ./cmd/installer
-```
-
-## Project Structure
-
-```
-BackgroundChanger/
-├── cmd/
-│   ├── changer/          # bgchanger source
-│   ├── statusservice/    # bgStatusService source
-│   └── installer/        # GUI installer source
-├── internal/
-│   ├── sysinfo/          # System information gathering
-│   ├── overlay/          # Image text rendering
-│   ├── loginscreen/      # Login screen management
-│   └── installer/        # Installer dialogs and service management
-├── install/
-│   ├── install.ps1       # Task installer (PowerShell)
-│   └── uninstall.ps1     # Task uninstaller (PowerShell)
-└── assets/
-    └── fonts/            # Embedded fonts
-```
-
-## Credits
-
-- Random wallpapers provided by [slide.recipes](https://www.slide.recipes/bg/)
-- Font: [JetBrains Mono](https://www.jetbrains.com/lp/mono/) (OFL License)
+Uninstall stops and removes the service, unregisters the app, and restores any lock-screen/logon policy values that existed before installation. Configuration and generated images are kept by default for audit and recovery. Product-key exports and local VM media are ignored by git.
 
 ## License
 
-MIT
+[MIT](LICENSE). JetBrains Mono is distributed under the SIL Open Font License; see [assets/fonts/OFL.txt](assets/fonts/OFL.txt).

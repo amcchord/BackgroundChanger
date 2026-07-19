@@ -24,3 +24,12 @@ go.work
 .DS_Store
 Thumbs.db
 
+# Local build and test output
+dist/
+artifacts/
+test-output/
+
+# Local licensing material (never commit developer-subscription exports)
+docs/*Keys*.xml
+docs/*keys*.xml
+

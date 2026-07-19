@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test
+        run: go test ./...
+      - name: Build installer
+        shell: pwsh
+        run: ./build.ps1 -Version ci -Commit $env:GITHUB_SHA
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BackgroundChangerSetup
+          path: |
+            dist/BackgroundChangerSetup.exe
+            dist/SHA256SUMS.txt
